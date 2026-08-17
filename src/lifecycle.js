@@ -30,10 +30,16 @@ const EDGES = {
   PUBLISH_GATE: [],
 };
 
-export function isValidTransition(from, to) {
+export function isValidTransition(from, to, opts = {}) {
   if (to === 'COMPLETE_LOCAL') {
-    // completion is reachable only from VERIFY, CRITIC, or PUBLISH_GATE
-    return ['VERIFY', 'CRITIC', 'PUBLISH_GATE'].includes(from);
+    // completion is reachable only from VERIFY or CRITIC
+    return ['VERIFY', 'CRITIC'].includes(from);
+  }
+  if (from === 'COMPLETE_LOCAL' && to === 'PUBLISH_GATE') {
+    // Boundary semantics (Finding 1): leaving COMPLETE_LOCAL requires a
+    // new explicit control-plane directive authorizing/requesting
+    // publication evaluation. The worker never advances autonomously.
+    return opts.controlPlaneDirective === true;
   }
   if (BOUNDARY_STATES.includes(to)) return true; // any state may enter a BLOCKED_* boundary
   return (EDGES[from] || []).includes(to);

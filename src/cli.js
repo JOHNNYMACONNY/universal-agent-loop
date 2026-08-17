@@ -37,7 +37,7 @@ commands:
   plan --task-profile '{"scope":"trivial|substantial","clarity":"clear|ambiguous"}' [--root DIR]
   state get [--root DIR]
   state init --project P --task T [--authority READ,LOCAL_EDIT,...] [--root DIR]
-  state transition <STATE> [--note "..."] [--root DIR]
+  state transition <STATE> [--note "..."] [--control-plane-directive] [--root DIR]
   state record-verification --command "npm test" --result pass|fail [--root DIR]
   state record-critic --result pass|fail [--method code-review|subagent|fresh-prompt] [--root DIR]
   authority check <ACTION...> [--grants READ,PUSH,...] [--root DIR]
@@ -116,7 +116,9 @@ export async function main(argv = process.argv.slice(2)) {
       if (sub === 'transition') {
         const to = rest[0];
         if (!to) { out(null, 'state transition requires a target state'); return 2; }
-        const r = transition(root, to, flags.note || '');
+        const r = transition(root, to, flags.note || '', {
+          controlPlaneDirective: !!flags['control-plane-directive'],
+        });
         if (!r.ok) { out(null, r.error); return 1; }
         out(r.state);
         return 0;

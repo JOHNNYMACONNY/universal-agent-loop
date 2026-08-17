@@ -184,6 +184,39 @@ test('F2: current verification failure -> REPAIR; missing -> VERIFY', async (t) 
   assert.notEqual(r.entry.state, 'VERIFY');
 });
 
+// Finding 1 regression: an autonomous worker must NOT leave
+// COMPLETE_LOCAL on its own. COMPLETE_LOCAL -> PUBLISH_GATE is valid only
+// with an explicit control-plane directive.
+test('F1: COMPLETE_LOCAL is a boundary; PUBLISH_GATE needs control-plane directive', async (t) => {
+  const { initState, transition, recordVerification, recordCritic, readState } = await import('../src/state.js');
+  const root = mkRepo(t);
+  write(root, 'tickets/1-a.md', ticket({ title: 'a', status: 'done', boxes: [[true, 'a']], verification: ['npm test: pass'] }));
+  commit(root, 'done');
+  initState(root, { project: 'p', task: 't', authority: ['READ', 'LOCAL_EDIT', 'LOCAL_TEST', 'LOCAL_COMMIT', 'PUSH'] });
+  recordVerification(root, 'npm test', 'pass');
+  recordCritic(root, { result: 'pass', method: 'code-review' });
+
+  // Resolver reaches COMPLETE_LOCAL and must never emit PUBLISH_GATE.
+  const { entry } = entryFor(root, { scope: 'substantial', clarity: 'clear' });
+  assert.equal(entry.state, 'COMPLETE_LOCAL');
+
+  // Walk the lifecycle to COMPLETE_LOCAL legitimately.
+  for (const s of ['RECONCILE', 'CLASSIFY', 'IMPLEMENT', 'VERIFY', 'CRITIC']) {
+    assert.equal(transition(root, s).ok, true, `transition to ${s}`);
+  }
+  assert.equal(transition(root, 'COMPLETE_LOCAL').ok, true);
+
+  // Autonomous advance is refused, even with PUSH in the granted set.
+  const auto = transition(root, 'PUBLISH_GATE');
+  assert.equal(auto.ok, false);
+  assert.equal(readState(root).lifecycle_state, 'COMPLETE_LOCAL');
+
+  // Explicit control-plane directive permits the transition.
+  const directed = transition(root, 'PUBLISH_GATE', 'control plane authorized publication evaluation', { controlPlaneDirective: true });
+  assert.equal(directed.ok, true);
+  assert.equal(readState(root).lifecycle_state, 'PUBLISH_GATE');
+});
+
 // Invalid lifecycle transitions are rejected by the state store.
 test('transitions enforce lifecycle edges', (t) => {
   assert.equal(isValidTransition('DISCOVER', 'RECONCILE'), true);

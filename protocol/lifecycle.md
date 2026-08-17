@@ -17,8 +17,14 @@ VERIFY -> CRITIC
 CRITIC -> REPAIR | COMPLETE_LOCAL
 REPAIR -> VERIFY
 VERIFY -> REPAIR              (when verification fails)
+VERIFY -> COMPLETE_LOCAL      (trivial DIRECT_EXECUTE work only)
 COMPLETE_LOCAL -> PUBLISH_GATE
 ```
+
+`COMPLETE_LOCAL -> PUBLISH_GATE` is valid ONLY after a new explicit
+control-plane directive authorizing or requesting publication evaluation.
+The worker MUST NOT perform this transition autonomously; the reference
+engine refuses it unless the directive flag is explicitly supplied.
 
 Boundary states (terminal until control plane intervenes):
 

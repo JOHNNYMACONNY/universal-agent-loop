@@ -65,8 +65,14 @@ this file is a faithful summary, not a replacement.
 5. **Autonomy** — after every subtask ask only: does authorized work
    remain? If yes, continue. If no, COMPLETE_LOCAL. Never stop because a
    skill, ticket, commit, subagent, or single verification finished.
-6. **PUBLISH_GATE** — enumerate remaining actions (push, PR, merge,
-   deploy). Check each:
+6. **COMPLETE_LOCAL is a boundary.** When all authorized local work is
+   done and verified (current verification + current critic pass for
+   substantial work), transition to COMPLETE_LOCAL and STOP advancing.
+7. **PUBLISH_GATE** — enter ONLY on a new explicit control-plane
+   directive requesting publication evaluation:
+   `state transition PUBLISH_GATE --control-plane-directive`.
+   The engine refuses the transition without the flag. Then enumerate
+   remaining actions (push, PR, merge, deploy) and check each:
    `authority check PUSH CREATE_PR` (grants from state file). Denied →
    report BLOCKED_EXTERNAL_AUTH with the exact actions requested. Never
    push/PR/merge/deploy without explicit recorded authority.
