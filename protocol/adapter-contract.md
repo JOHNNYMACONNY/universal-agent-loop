@@ -27,7 +27,12 @@ An adapter MUST:
    artifacts.md §6 and handoff.md.
 8. Perform VERIFY using the highest available evidence tier
    (truth-model.md §5) and record results.
-9. Run CRITIC as an evaluation distinct from the builder pass.
+9. Run CRITIC as an evaluation distinct from the builder pass, using the
+   hierarchy from lifecycle.md §3: Matt Pocock `code-review` skill when
+   available, else an independent subagent, else a fresh-prompt pass.
+   Record the outcome via `state record-critic` so freshness anchoring
+   applies. Substantial work MUST NOT reach COMPLETE_LOCAL without a
+   current critic pass.
 10. Return a concise factual report (section 3) at meaningful checkpoints.
 
 ## 2. Degeneration rules

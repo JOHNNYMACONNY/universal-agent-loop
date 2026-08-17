@@ -38,6 +38,9 @@ SECRET_OR_CREDENTIAL_ACTION read/use/create secrets or credentials
   BLOCKED_EXTERNAL_AUTH with an enumeration of the exact actions
   requested, never a silent skip.
 - A6. Denied actions are reported, not retried with euphemisms.
+- A7. Verification and critic evidence never expands the authority set.
+  A passing review is evidence for the CRITIC gate, not a grant of push,
+  merge, or publication rights.
 
 ## 3. Engine behavior
 

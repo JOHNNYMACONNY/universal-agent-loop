@@ -49,10 +49,19 @@ this file is a faithful summary, not a replacement.
    - VERIFY — run the highest-tier deterministic evidence available
      (runtime > tests > static checks). Record it:
      `state record-verification --command "..." --result pass|fail`.
-   - CRITIC — independent review (fresh subagent or the `code-review`
-     skill): acceptance criteria, missing cases, scope drift, unrelated
-     damage, evidence sufficiency. Findings -> REPAIR -> VERIFY -> CRITIC.
-     No cosmetic polishing loops.
+     A current `fail` routes to REPAIR; missing evidence routes to VERIFY.
+   - CRITIC — independent review. Hierarchy: (1) invoke the `code-review`
+     skill when available (preferred default for substantial work),
+     (2) a fresh subagent reviewer, (3) a fresh-prompt review pass.
+     Evaluate: acceptance criteria, missing cases, scope drift, unrelated
+     damage, evidence sufficiency. Record the outcome:
+     `state record-critic --result pass|fail --method code-review`.
+     Findings -> REPAIR -> VERIFY -> CRITIC. No cosmetic polishing loops.
+     The code-review skill is a bounded subtask: it never terminates the
+     loop, never redefines completion, never overrides authority gates.
+     Substantial work reaches COMPLETE_LOCAL only with a CURRENT critic
+     pass (anchored to HEAD + the verification it reviewed). Trivial
+     DIRECT_EXECUTE edits may complete after VERIFY without CRITIC.
 5. **Autonomy** — after every subtask ask only: does authorized work
    remain? If yes, continue. If no, COMPLETE_LOCAL. Never stop because a
    skill, ticket, commit, subagent, or single verification finished.

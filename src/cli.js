@@ -3,7 +3,7 @@ import { detectCapabilities } from './capabilities.js';
 import { scan } from './scan.js';
 import { resolveEntry } from './lifecycle.js';
 import { checkAuthority } from './authority.js';
-import { readState, initState, transition, recordVerification } from './state.js';
+import { readState, initState, transition, recordVerification, recordCritic } from './state.js';
 import { validateHandoff, writeHandoff } from './handoff.js';
 
 function parseArgs(argv) {
@@ -39,6 +39,7 @@ commands:
   state init --project P --task T [--authority READ,LOCAL_EDIT,...] [--root DIR]
   state transition <STATE> [--note "..."] [--root DIR]
   state record-verification --command "npm test" --result pass|fail [--root DIR]
+  state record-critic --result pass|fail [--method code-review|subagent|fresh-prompt] [--root DIR]
   authority check <ACTION...> [--grants READ,PUSH,...] [--root DIR]
   handoff write [--slug name] [--root DIR]
   handoff validate <file>
@@ -74,7 +75,7 @@ export async function main(argv = process.argv.slice(2)) {
       const taskProfile = JSON.parse(flags['task-profile']);
       const evidence = scan(root);
       const entry = resolveEntry(
-        { ...evidence.summary, prs: evidence.prs, state: evidence.state },
+        { ...evidence.summary, prs: evidence.prs, state: evidence.state, git: evidence.git },
         taskProfile,
       );
       out({
@@ -125,6 +126,13 @@ export async function main(argv = process.argv.slice(2)) {
         const r = recordVerification(root, flags.command, flags.result);
         if (!r.ok) { out(null, r.error); return 1; }
         out({ ok: true });
+        return 0;
+      }
+      if (sub === 'record-critic') {
+        if (!flags.result) { out(null, 'requires --result pass|fail [--method code-review|subagent|fresh-prompt]'); return 2; }
+        const r = recordCritic(root, { result: flags.result, method: flags.method });
+        if (!r.ok) { out(null, r.error); return 1; }
+        out({ ok: true, critic: r.critic });
         return 0;
       }
       out(null, USAGE);

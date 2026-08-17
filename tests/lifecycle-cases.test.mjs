@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { scan } from '../src/scan.js';
 import { resolveEntry } from '../src/lifecycle.js';
-import { initState, recordVerification, transition } from '../src/state.js';
+import { initState, recordVerification, recordCritic, transition } from '../src/state.js';
 import { writeHandoff, validateHandoff } from '../src/handoff.js';
 import { checkAuthority } from '../src/authority.js';
 import { mkRepo, write, commit, spec, ticket, wayfinderMap, installFakeGh, pr } from './helpers.mjs';
@@ -15,7 +15,7 @@ function entryFor(root, taskProfile, env) {
     const evidence = scan(root);
     return {
       entry: resolveEntry(
-        { ...evidence.summary, prs: evidence.prs, state: evidence.state },
+        { ...evidence.summary, prs: evidence.prs, state: evidence.state, git: evidence.git },
         taskProfile,
       ),
       evidence,
@@ -94,8 +94,9 @@ test('case 6: dirty unrelated work is reported and preserved', (t) => {
   assert.equal(statusAfter, statusBefore); // scan must not mutate the tree
 });
 
-// Case 7 — local completion without push authority -> COMPLETE_LOCAL, push denied.
-test('case 7: verified done tickets -> COMPLETE_LOCAL; PUSH denied without grant', (t) => {
+// Case 7a — substantial ticketed work, verification pass, NO critic pass
+// -> CRITIC (completion is not reachable without the critic gate).
+test('case 7a: verified substantial work without critic -> CRITIC', (t) => {
   const root = mkRepo(t);
   write(root, 'docs/spec-feature-x.md', spec({}));
   write(root, 'tickets/1-build-x.md', ticket({ status: 'done', boxes: [[true, 'implement x']], verification: ['npm test: pass'] }));
@@ -103,10 +104,64 @@ test('case 7: verified done tickets -> COMPLETE_LOCAL; PUSH denied without grant
   initState(root, { project: 'fixture', task: 'x', authority: ['READ', 'LOCAL_EDIT', 'LOCAL_TEST', 'LOCAL_COMMIT'] });
   recordVerification(root, 'npm test', 'pass');
   const { entry } = entryFor(root, { scope: 'substantial', clarity: 'clear' });
+  assert.equal(entry.state, 'CRITIC');
+  assert.notEqual(entry.state, 'COMPLETE_LOCAL');
+});
+
+// Case 7b — current verification + current critic pass -> COMPLETE_LOCAL;
+// PUSH still denied without grant.
+test('case 7b: verified + current critic pass -> COMPLETE_LOCAL; PUSH denied', (t) => {
+  const root = mkRepo(t);
+  write(root, 'docs/spec-feature-x.md', spec({}));
+  write(root, 'tickets/1-build-x.md', ticket({ status: 'done', boxes: [[true, 'implement x']], verification: ['npm test: pass'] }));
+  commit(root, 'done');
+  initState(root, { project: 'fixture', task: 'x', authority: ['READ', 'LOCAL_EDIT', 'LOCAL_TEST', 'LOCAL_COMMIT'] });
+  recordVerification(root, 'npm test', 'pass');
+  recordCritic(root, { result: 'pass', method: 'code-review' });
+  const { entry } = entryFor(root, { scope: 'substantial', clarity: 'clear' });
   assert.equal(entry.state, 'COMPLETE_LOCAL');
   const gate = checkAuthority(['PUSH'], ['READ', 'LOCAL_EDIT', 'LOCAL_TEST', 'LOCAL_COMMIT']);
   assert.equal(gate.allGranted, false);
   assert.equal(gate.results[0].decision, 'deny');
+});
+
+// Case 7c — implementation changed AFTER a critic pass: stale critic must
+// never bless new code. New commit -> VERIFY (verification also stale);
+// after re-verifying, stale critic -> CRITIC, still not COMPLETE_LOCAL.
+test('case 7c: implementation change after critic pass invalidates completion', (t) => {
+  const root = mkRepo(t);
+  write(root, 'docs/spec-feature-x.md', spec({}));
+  write(root, 'tickets/1-build-x.md', ticket({ status: 'done', boxes: [[true, 'implement x']], verification: ['npm test: pass'] }));
+  commit(root, 'done');
+  initState(root, { project: 'fixture', task: 'x', authority: ['READ', 'LOCAL_EDIT', 'LOCAL_TEST', 'LOCAL_COMMIT'] });
+  recordVerification(root, 'npm test', 'pass');
+  recordCritic(root, { result: 'pass', method: 'code-review' });
+  assert.equal(entryFor(root, { scope: 'substantial', clarity: 'clear' }).entry.state, 'COMPLETE_LOCAL');
+
+  // implementation changes after the critic pass
+  write(root, 'src/late-change.js', 'export const late = 1;\n');
+  commit(root, 'late change after critic');
+  assert.equal(entryFor(root, { scope: 'substantial', clarity: 'clear' }).entry.state, 'VERIFY');
+
+  // re-verify at the new head; critic is still anchored to the old head
+  // and the old verification index -> CRITIC, not completion.
+  recordVerification(root, 'npm test', 'pass');
+  const { entry } = entryFor(root, { scope: 'substantial', clarity: 'clear' });
+  assert.equal(entry.state, 'CRITIC');
+  assert.notEqual(entry.state, 'COMPLETE_LOCAL');
+});
+
+// Case 7d — trivial DIRECT_EXECUTE work completes after verification
+// without a mandatory CRITIC pass.
+test('case 7d: trivial work completes after verification without critic', (t) => {
+  const root = mkRepo(t);
+  initState(root, { project: 'fixture', task: 'fix typo', authority: ['READ', 'LOCAL_EDIT', 'LOCAL_TEST', 'LOCAL_COMMIT'] });
+  write(root, 'README.md', '# fixture (typo fixed)\n');
+  commit(root, 'fix typo');
+  recordVerification(root, 'git diff --check', 'pass');
+  const { entry } = entryFor(root, { scope: 'trivial', clarity: 'clear', summary: 'fix one typo' });
+  assert.equal(entry.state, 'COMPLETE_LOCAL');
+  assert.equal(entry.rule, 'R8');
 });
 
 // Case 8 — context rollover: fresh agent resumes from durable state.

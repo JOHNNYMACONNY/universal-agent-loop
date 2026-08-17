@@ -62,8 +62,27 @@ export function resolveEntry(reconciled, taskProfile = {}) {
   const latestVerification = stateFile && Array.isArray(stateFile.verification) && stateFile.verification.length
     ? stateFile.verification[stateFile.verification.length - 1]
     : null;
-  const criticPassed = !!(stateFile && stateFile.critic && stateFile.critic.result === 'pass');
-  const verified = !!(latestVerification && latestVerification.result === 'pass');
+  const critic = (stateFile && stateFile.critic) || null;
+  const gitHead = reconciled.git && reconciled.git.isRepo ? reconciled.git.head : null;
+
+  // Freshness anchoring (lifecycle.md): evidence recorded against a HEAD
+  // that no longer matches is stale. In a git repo, a missing anchor can
+  // never bless current implementation. Without git, anchors cannot be
+  // disproved, so evidence is accepted at face value.
+  const anchorCurrent = (rec) => {
+    if (!rec) return false;
+    if (!gitHead) return true;
+    return rec.head === gitHead;
+  };
+  const ciVerified = prs.length > 0 && prs.every((p) => p.checks === 'passing');
+  const verifiedCurrent = ciVerified
+    || !!(latestVerification && latestVerification.result === 'pass' && anchorCurrent(latestVerification));
+  const verificationFailed = !!(latestVerification && latestVerification.result === 'fail' && anchorCurrent(latestVerification));
+  const criticCurrent = !!(critic && critic.result === 'pass'
+    && anchorCurrent(critic)
+    && stateFile && Array.isArray(stateFile.verification)
+    && critic.verification_index === stateFile.verification.length - 1);
+  const criticFailed = !!(critic && critic.result === 'fail' && anchorCurrent(critic));
 
   // Unresolvable conflict beats everything.
   if (conflicting.length >= 2) {
@@ -95,14 +114,14 @@ export function resolveEntry(reconciled, taskProfile = {}) {
     return { state: 'REPAIR', rule: 'R5', rationale: `PR #${failingPr.number} has failing checks` };
   }
 
-  // R6: open PR, checks passing, critic not passed.
-  const greenPr = prs.find((p) => p.checks === 'passing');
-  if (greenPr && !criticPassed) {
-    return { state: 'CRITIC', rule: 'R6', rationale: `PR #${greenPr.number} green; critic not yet passed` };
+  // PR checks pending/unknown -> VERIFY (evidence not yet available).
+  const pendingPr = prs.find((p) => p.checks !== 'passing');
+  if (pendingPr) {
+    return { state: 'VERIFY', rule: 'R5', rationale: `PR #${pendingPr.number} checks pending or unavailable` };
   }
 
   // R4: open/partial ticket work remains -> IMPLEMENT. Earliest unresolved
-  // state wins over verifying already-claimed-complete work (R5b below).
+  // state wins over verifying already-claimed-complete work (R5 below).
   if (partialTickets.length) {
     return { state: 'IMPLEMENT', rule: 'R4', rationale: `partial ticket ${partialTickets[0].path}` };
   }
@@ -111,19 +130,35 @@ export function resolveEntry(reconciled, taskProfile = {}) {
   }
 
   // R5c: a CURRENT recorded verification failure wins over generic
-  // unverified handling (lifecycle.md FINDING-2 semantics): fail -> REPAIR.
-  if (latestVerification && latestVerification.result === 'fail') {
+  // unverified handling: fail -> REPAIR. (Finding 2.)
+  if (verificationFailed) {
     return { state: 'REPAIR', rule: 'R5', rationale: 'current verification evidence recorded as fail' };
   }
 
-  // R5b: implementation evidenced but unverified, and no open ticket work.
-  if ((completeTickets.length > 0 || prs.length > 0) && !verified) {
-    return { state: 'VERIFY', rule: 'R5', rationale: 'implementation claimed complete; verification evidence missing' };
+  // R6c: a current CRITIC failure -> REPAIR (findings feed the repair loop).
+  if (criticFailed) {
+    return { state: 'REPAIR', rule: 'R6', rationale: 'current critic pass recorded as fail' };
   }
 
-  // Completion: tickets exist, all done and verified, no open PR work.
-  if (tickets.length && openTickets.length === 0 && verified && prs.length === 0) {
-    return { state: 'COMPLETE_LOCAL', rule: 'R7', rationale: 'all tickets done and verified; no open PRs' };
+  // Completion evaluation for substantial/ticketed work (Finding 3):
+  //   implementation complete + current verification + no critic  -> CRITIC
+  //   + current critic pass                                        -> COMPLETE_LOCAL
+  const workItemsExist = tickets.length > 0 || prs.length > 0;
+  const prsDone = prs.every((p) => p.checks === 'passing');
+  if (workItemsExist && openTickets.length === 0 && prsDone) {
+    if (!verifiedCurrent) {
+      return { state: 'VERIFY', rule: 'R5', rationale: 'implementation claimed complete; current verification evidence missing' };
+    }
+    if (!criticCurrent) {
+      return { state: 'CRITIC', rule: 'R6', rationale: 'verification current; critic pass missing or stale' };
+    }
+    return { state: 'COMPLETE_LOCAL', rule: 'R7', rationale: 'tickets done; verification and critic pass are current' };
+  }
+
+  // R8: trivial DIRECT_EXECUTE work may complete after verification
+  // without a mandatory CRITIC pass.
+  if (tickets.length === 0 && prs.length === 0 && scope === 'trivial' && verifiedCurrent) {
+    return { state: 'COMPLETE_LOCAL', rule: 'R8', rationale: 'trivial work verified; CRITIC not required' };
   }
 
   // Classification of fresh work.

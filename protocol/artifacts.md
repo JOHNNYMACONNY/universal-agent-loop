@@ -100,9 +100,16 @@ rollover risk, multi-session effort). Contents:
     "current_ticket": "github:#318",
     "current_pr": "github:#327"
   },
-  "verification": [{ "command": "npm test", "result": "pass", "at": "..." }],
+  "verification": [{ "command": "npm test", "result": "pass", "head": "<sha>", "at": "..." }],
+  "critic": { "result": "pass", "method": "code-review", "head": "<sha>", "verification_index": 0, "at": "..." },
   "history": [{ "state": "DISCOVER", "at": "...", "note": "..." }]
 }
 ```
+
+`verification` entries and the `critic` record carry `head` anchors (git
+HEAD at record time; null outside a repo). Evidence whose anchor differs
+from current HEAD is stale. The critic record additionally carries
+`verification_index` — the index into `verification` of the evidence the
+critic reviewed — so re-verification also stales a critic pass.
 
 If no durable repo-local state is required, do not create the directory.

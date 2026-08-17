@@ -73,10 +73,22 @@ If no, enter COMPLETE_LOCAL.
   criteria, missing cases, scope drift, damage to unrelated behavior,
   evidence sufficiency. Findings must connect to correctness, security,
   regressions, material maintainability, or evidence gaps. Cosmetic
-  polishing loops are prohibited.
+  polishing loops are prohibited. CRITIC implementation hierarchy:
+  1. the Matt Pocock `code-review` skill, when available (preferred
+     default for substantial work);
+  2. an independent fresh subagent/reviewer;
+  3. a separate fresh-prompt review pass in the same harness.
+  The code-review skill is a bounded capability inside the lifecycle. It
+  MUST NOT own the lifecycle, terminate the loop, redefine project
+  completion, bypass deterministic verification, or override authority
+  gates. A passing review is evidence for the CRITIC gate only.
 - REPAIR — fix CRITIC/VERIFY findings, then re-enter VERIFY.
 - COMPLETE_LOCAL — all authorized local work is complete and verified.
   Does not imply pushed, merged, deployed, released, or published.
+  COMPLETE_LOCAL is a boundary state: the worker MUST NOT advance from it
+  automatically. The transition COMPLETE_LOCAL -> PUBLISH_GATE is valid
+  only after a new explicit control-plane directive authorizing or
+  requesting publication evaluation.
 - PUBLISH_GATE — enumerate remaining unauthorized resulting states
   (push, PR, merge, deploy, ...) and request explicit authority. Fail
   closed.
@@ -97,8 +109,22 @@ Resume rules:
 - R4. Open ticket without complete implementation evidence -> IMPLEMENT.
 - R5. Implementation evidenced but unverified, or PR with failing checks
   -> VERIFY (enter REPAIR directly when failure evidence is already
-  recorded and current).
-- R6. PR open with passing checks, critic not yet passed -> CRITIC.
+  recorded and current). A current recorded verification failure is
+  distinct from missing evidence: failure -> REPAIR, missing -> VERIFY.
+- R6. Implementation complete and verified, but no current critic pass
+  -> CRITIC. A current recorded critic failure -> REPAIR.
+- R7. Substantial/ticketed work is COMPLETE_LOCAL only when BOTH current
+  verification pass and current critic pass exist.
+- R8. Trivial DIRECT_EXECUTE work may complete after verification without
+  a mandatory CRITIC pass. Do not invoke heavyweight review for tiny
+  deterministic edits.
+
+Evidence freshness is anchored to implementation identity, not
+timestamps: verification and critic records carry the git HEAD they
+evaluated (and critic records the index of the verification evidence
+reviewed). A later commit, or newer verification after a critic pass,
+makes the corresponding evidence stale. In a git repository, evidence
+without a HEAD anchor is never current.
 
 Classification rules:
 
