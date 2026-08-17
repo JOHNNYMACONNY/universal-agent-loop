@@ -7,11 +7,14 @@ const IGNORE_DIRS = new Set(['node_modules', '.git', '.agent-loop', 'dist', 'bui
 const SCAN_DIRS = ['', 'docs', 'specs', 'design', 'tickets', 'tasks', 'plans', 'wayfinder', '.agent-loop/handoffs'];
 const MAX_FILES = 200;
 
+// Heuristics match path SEGMENTS, not substrings, to avoid false
+// positives like ROADMAP.md matching "map". Frontmatter ual_type wins.
 const TYPE_PATTERNS = [
-  [/wayfinder|map/i, 'wayfinder_map'],
-  [/spec/i, 'spec'],
-  [/ticket|task/i, 'ticket'],
-  [/plan|design/i, 'plan'],
+  [/wayfinder/i, 'wayfinder_map'],
+  [/(^|[\/_-])map\.md$/i, 'wayfinder_map'],
+  [/(^|[\/_-])spec(s)?([\/_.-]|$)/i, 'spec'],
+  [/(^|[\/_-])(ticket|tickets|task|tasks)([\/_.-]|$)/i, 'ticket'],
+  [/(^|[\/_-])(plan|plans|design)([\/_.-]|$)/i, 'plan'],
   [/handoff/i, 'handoff'],
 ];
 
