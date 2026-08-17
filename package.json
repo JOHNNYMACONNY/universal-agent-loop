@@ -1,0 +1,16 @@
+{
+  "name": "universal-agent-loop",
+  "version": "0.1.0",
+  "description": "Harness-neutral agent orchestration protocol (UAL): canonical lifecycle, reference engine, and harness adapters.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "agent-loop": "bin/agent-loop.js"
+  },
+  "scripts": {
+    "test": "node --test tests/"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

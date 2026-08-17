@@ -1,0 +1,137 @@
+# UAL Lifecycle
+
+Version: 1. Status names in this document are canonical. Adapters MUST use
+these exact strings.
+
+## 1. States
+
+```text
+DISCOVER -> RECONCILE -> CLASSIFY
+CLASSIFY -> DIRECT_EXECUTE | WAYFIND | SPEC | TICKET | IMPLEMENT | VERIFY | CRITIC | REPAIR
+DIRECT_EXECUTE -> VERIFY
+WAYFIND -> SPEC
+SPEC -> TICKET
+TICKET -> IMPLEMENT
+IMPLEMENT -> VERIFY
+VERIFY -> CRITIC
+CRITIC -> REPAIR | COMPLETE_LOCAL
+REPAIR -> VERIFY
+VERIFY -> REPAIR              (when verification fails)
+COMPLETE_LOCAL -> PUBLISH_GATE
+```
+
+Boundary states (terminal until control plane intervenes):
+
+```text
+BLOCKED_EXTERNAL_AUTH
+BLOCKED_DECISION
+BLOCKED_CREDENTIAL
+BLOCKED_ENVIRONMENT
+BLOCKED_UNRESOLVABLE_CONFLICT
+COMPLETE_LOCAL
+```
+
+Signals (annotations on any state, never states themselves):
+
+```text
+ROLLOVER_RECOMMENDED
+ROLLOVER_REQUIRED
+```
+
+## 2. State ownership
+
+2.1. The universal loop owns the lifecycle. Nested skills, subagents,
+models, trackers, and harness-native commands perform bounded subtasks
+inside one state. A nested skill reaching its own terminal state MUST NOT
+be treated as lifecycle completion.
+
+2.2. After any subtask ends, the loop evaluates exactly one question:
+"Does authorized work remain?" If yes, advance to the next valid state.
+If no, enter COMPLETE_LOCAL.
+
+## 3. State semantics
+
+- DISCOVER — collect implementation-truth evidence about the repository:
+  git topology, instructions, existing artifacts, runtime evidence.
+  Read-only.
+- RECONCILE — classify every discovered durable artifact (see
+  artifacts.md) and resolve conflicts before advancing.
+- CLASSIFY — produce a task profile and select the entry state (section 4).
+- DIRECT_EXECUTE — perform tiny, deterministic work directly.
+- WAYFIND — resolve destination/architecture/product ambiguity. Terminal
+  condition: no important unresolved decision remains that must be settled
+  before implementation can proceed safely. Finishing a wayfinding artifact
+  does NOT end the lifecycle; advance to SPEC when authority remains.
+- SPEC — create or update the accepted specification only when required.
+  Do not recreate a spec to normalize formatting.
+- TICKET — derive bounded, independently verifiable slices from the spec,
+  using the project's existing tracker convention.
+- IMPLEMENT — change the repository.
+- VERIFY — produce deterministic evidence (section 6, truth-model.md
+  hierarchy).
+- CRITIC — independent evaluation against current intent: acceptance
+  criteria, missing cases, scope drift, damage to unrelated behavior,
+  evidence sufficiency. Findings must connect to correctness, security,
+  regressions, material maintainability, or evidence gaps. Cosmetic
+  polishing loops are prohibited.
+- REPAIR — fix CRITIC/VERIFY findings, then re-enter VERIFY.
+- COMPLETE_LOCAL — all authorized local work is complete and verified.
+  Does not imply pushed, merged, deployed, released, or published.
+- PUBLISH_GATE — enumerate remaining unauthorized resulting states
+  (push, PR, merge, deploy, ...) and request explicit authority. Fail
+  closed.
+
+## 4. Entry resolution (CLASSIFY)
+
+Inputs: (a) reconciliation result, (b) task profile
+`{ scope: trivial|substantial, clarity: clear|ambiguous }` supplied by the
+agent. Resolution is deterministic. Resume rules R1–R6 run first, in
+order; the first match wins. If none match, classification rules C1–C4
+run, in order.
+
+Resume rules:
+
+- R1. Wayfinder map with unresolved decisions -> WAYFIND.
+- R2. Resolved wayfinder map, no accepted spec -> SPEC.
+- R3. Accepted spec, no open tickets -> TICKET.
+- R4. Open ticket without complete implementation evidence -> IMPLEMENT.
+- R5. Implementation evidenced but unverified, or PR with failing checks
+  -> VERIFY (enter REPAIR directly when failure evidence is already
+  recorded and current).
+- R6. PR open with passing checks, critic not yet passed -> CRITIC.
+
+Classification rules:
+
+- C1. scope=trivial AND clarity=clear -> DIRECT_EXECUTE.
+- C2. scope=substantial AND clarity=ambiguous -> WAYFIND.
+- C3. Accepted spec exists with an eligible open ticket -> IMPLEMENT.
+- C4. scope=substantial AND clarity=clear, no accepted spec -> SPEC.
+
+Never restart automatically from planning when resumable state exists.
+Resume from the earliest unresolved or unverified state.
+
+## 5. Autonomy
+
+Once execution authority exists, continue authorized work without
+pausing. Do not stop because a ticket, commit, subagent return, single
+test pass, single critic pass, plan creation, skill completion,
+checkpoint, or context rollover occurred. Stop only at a boundary state
+(section 1) or COMPLETE_LOCAL.
+
+Ordinary implementation uncertainty is not BLOCKED_DECISION. Investigate
+first. Escalate only genuine boundaries: missing authority, missing
+decision that changes destination/architecture/scope/security/acceptance,
+missing credentials, broken environment, unresolvable artifact conflict.
+
+## 6. Context rollover
+
+Rollover is a lifecycle mechanism, not a task failure.
+
+- ROLLOVER_RECOMMENDED: a fresh context would improve reliability;
+  current authority remains valid. Do NOT stop authorized work solely for
+  this signal.
+- ROLLOVER_REQUIRED: continued execution creates concrete continuity or
+  correctness risk. Before rollover, persist a durable handoff
+  (handoff.md) sufficient for a compatible agent to resume with no
+  conversational memory. The loop MUST survive harness/session
+  replacement.
