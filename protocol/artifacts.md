@@ -100,16 +100,20 @@ rollover risk, multi-session effort). Contents:
     "current_ticket": "github:#318",
     "current_pr": "github:#327"
   },
-  "verification": [{ "command": "npm test", "result": "pass", "head": "<sha>", "at": "..." }],
-  "critic": { "result": "pass", "method": "code-review", "head": "<sha>", "verification_index": 0, "at": "..." },
+  "verification": [{ "command": "npm test", "result": "pass", "fingerprint": "<sha256>", "head": "<sha>", "at": "..." }],
+  "critic": { "result": "pass", "method": "code-review", "fingerprint": "<sha256>", "head": "<sha>", "verification_index": 0, "at": "..." },
   "history": [{ "state": "DISCOVER", "at": "...", "note": "..." }]
 }
 ```
 
-`verification` entries and the `critic` record carry `head` anchors (git
-HEAD at record time; null outside a repo). Evidence whose anchor differs
-from current HEAD is stale. The critic record additionally carries
+`verification` entries and the `critic` record carry a `fingerprint`
+anchor — the deterministic implementation fingerprint from
+protocol/lifecycle.md (HEAD + staged + unstaged + relevant untracked
+content, `.agent-loop/` and ignored files excluded; null outside a repo).
+Evidence whose fingerprint differs from the repository's current
+fingerprint is stale. The critic record additionally carries
 `verification_index` — the index into `verification` of the evidence the
-critic reviewed — so re-verification also stales a critic pass.
+critic reviewed — so re-verification also stales a critic pass. `head`
+remains as diagnostic metadata only.
 
 If no durable repo-local state is required, do not create the directory.

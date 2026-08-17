@@ -60,7 +60,10 @@ this file is a faithful summary, not a replacement.
      The code-review skill is a bounded subtask: it never terminates the
      loop, never redefines completion, never overrides authority gates.
      Substantial work reaches COMPLETE_LOCAL only with a CURRENT critic
-     pass (anchored to HEAD + the verification it reviewed). Trivial
+     pass. Currency is anchored to the implementation fingerprint
+     (HEAD + staged + unstaged + relevant untracked content): editing
+     files after verification or review — even without committing —
+     stales the evidence and routes back to VERIFY/CRITIC. Trivial
      DIRECT_EXECUTE edits may complete after VERIFY without CRITIC.
 5. **Autonomy** — after every subtask ask only: does authorized work
    remain? If yes, continue. If no, COMPLETE_LOCAL. Never stop because a

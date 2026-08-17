@@ -1,5 +1,8 @@
 // Git fact extraction. Read-only: this module never mutates the repo.
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 
 function git(root, args) {
   try {
@@ -74,6 +77,48 @@ export function gitFacts(root) {
     recentCommits,
     remotes,
   };
+}
+
+// Implementation fingerprint (protocol/lifecycle.md freshness rules).
+// Deterministic identity of the ACTUAL local implementation state:
+//   HEAD + staged tracked diff + unstaged tracked diff + relevant
+//   untracked files (path + content hash).
+// Exclusions: `.agent-loop/` (protocol-owned ephemeral state) is always
+// invisible to the fingerprint — even when tracked — so recording evidence
+// never invalidates itself. Git-ignored files are excluded by porcelain
+// semantics. Returns null outside a git repository.
+export function implementationFingerprint(root) {
+  const inside = git(root, ['rev-parse', '--is-inside-work-tree']);
+  if (inside !== 'true') return null;
+
+  const head = git(root, ['rev-parse', 'HEAD']) || 'UNBORN';
+  const pathspec = ['--', '.', ':(exclude).agent-loop'];
+  const staged = git(root, ['diff', '--cached', '--full-index', ...pathspec]) || '';
+  const unstaged = git(root, ['diff', '--full-index', ...pathspec]) || '';
+
+  const statusOut = git(root, ['status', '--porcelain=v1', '--untracked-files=all', ...pathspec]) || '';
+  const untracked = statusOut
+    .split('\n')
+    .filter((l) => l.startsWith('?? '))
+    .map((l) => l.slice(3).trim())
+    .sort();
+  const manifest = [];
+  for (const rel of untracked) {
+    const abs = path.join(root, rel);
+    let stat;
+    try { stat = fs.statSync(abs); } catch { continue; }
+    if (!stat.isFile()) continue;
+    const h = createHash('sha256');
+    try { h.update(fs.readFileSync(abs)); } catch { continue; }
+    manifest.push(`${rel}:${h.digest('hex')}`);
+  }
+
+  return createHash('sha256')
+    .update(head).update('\n')
+    .update(staged).update('\n')
+    .update(unstaged).update('\n')
+    .update(manifest.join('\n'))
+    .digest('hex');
 }
 
 // PR discovery via `gh`. Returns null when gh is unavailable/errors, so

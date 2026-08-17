@@ -69,16 +69,18 @@ export function resolveEntry(reconciled, taskProfile = {}) {
     ? stateFile.verification[stateFile.verification.length - 1]
     : null;
   const critic = (stateFile && stateFile.critic) || null;
-  const gitHead = reconciled.git && reconciled.git.isRepo ? reconciled.git.head : null;
+  const currentFingerprint = reconciled.fingerprint || null;
 
-  // Freshness anchoring (lifecycle.md): evidence recorded against a HEAD
-  // that no longer matches is stale. In a git repo, a missing anchor can
-  // never bless current implementation. Without git, anchors cannot be
-  // disproved, so evidence is accepted at face value.
+  // Freshness anchoring (lifecycle.md): evidence is current only when its
+  // recorded implementation fingerprint equals the repository's current
+  // fingerprint — covering commits, staged/unstaged edits, and relevant
+  // untracked files. In a git repo, evidence without a matching
+  // fingerprint can never bless current implementation. Without git,
+  // anchors cannot be disproved, so evidence is accepted at face value.
   const anchorCurrent = (rec) => {
     if (!rec) return false;
-    if (!gitHead) return true;
-    return rec.head === gitHead;
+    if (!currentFingerprint) return true;
+    return !!rec.fingerprint && rec.fingerprint === currentFingerprint;
   };
   const ciVerified = prs.length > 0 && prs.every((p) => p.checks === 'passing');
   const verifiedCurrent = ciVerified

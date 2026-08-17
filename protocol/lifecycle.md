@@ -125,12 +125,21 @@ Resume rules:
   a mandatory CRITIC pass. Do not invoke heavyweight review for tiny
   deterministic edits.
 
-Evidence freshness is anchored to implementation identity, not
-timestamps: verification and critic records carry the git HEAD they
-evaluated (and critic records the index of the verification evidence
-reviewed). A later commit, or newer verification after a critic pass,
-makes the corresponding evidence stale. In a git repository, evidence
-without a HEAD anchor is never current.
+Evidence freshness is anchored to an implementation fingerprint, not
+timestamps and not HEAD alone. In a git repository the fingerprint is a
+deterministic hash of: HEAD, the staged tracked diff, the unstaged
+tracked diff, and relevant untracked files (path + content hash).
+`.agent-loop/` (protocol-owned ephemeral state) is always excluded — even
+when tracked — so recording evidence never invalidates itself. Ignored
+files are excluded per git semantics. Verification records carry
+`fingerprint`; critic records carry `fingerprint` plus the index of the
+verification evidence reviewed. Evidence is current only when its
+recorded fingerprint equals the repository's current fingerprint: any
+implementation mutation — committed, staged, unstaged, or a new relevant
+untracked file — stales prior evidence, and re-verification stales a
+prior critic pass. Outside a git repository, anchors cannot be disproved
+and evidence is accepted at face value. HEAD remains as diagnostic
+metadata but is never the sole freshness identity.
 
 Classification rules:
 

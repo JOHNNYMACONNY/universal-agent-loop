@@ -75,7 +75,7 @@ export async function main(argv = process.argv.slice(2)) {
       const taskProfile = JSON.parse(flags['task-profile']);
       const evidence = scan(root);
       const entry = resolveEntry(
-        { ...evidence.summary, prs: evidence.prs, state: evidence.state, git: evidence.git },
+        { ...evidence.summary, prs: evidence.prs, state: evidence.state, git: evidence.git, fingerprint: evidence.fingerprint },
         taskProfile,
       );
       out({

@@ -15,7 +15,7 @@ function entryFor(root, taskProfile, env) {
     const evidence = scan(root);
     return {
       entry: resolveEntry(
-        { ...evidence.summary, prs: evidence.prs, state: evidence.state, git: evidence.git },
+        { ...evidence.summary, prs: evidence.prs, state: evidence.state, git: evidence.git, fingerprint: evidence.fingerprint },
         taskProfile,
       ),
       evidence,

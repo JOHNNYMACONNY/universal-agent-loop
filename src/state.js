@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { isValidTransition } from './lifecycle.js';
-import { gitFacts } from './git.js';
+import { gitFacts, implementationFingerprint } from './git.js';
 
 const DIR = '.agent-loop';
 const FILE = 'state.json';
@@ -59,24 +59,31 @@ export function transition(root, to, note = '', opts = {}) {
   return { ok: true, state: current };
 }
 
-// Verification evidence is anchored to the implementation identity it
-// exercised: current git HEAD (when in a repo). A later commit makes the
-// evidence stale.
+// Verification evidence is anchored to the implementation fingerprint it
+// exercised (HEAD + staged + unstaged + relevant untracked content;
+// `.agent-loop/` excluded). Any implementation mutation — committed or
+// not — makes the evidence stale. HEAD is kept as diagnostic metadata.
 export function recordVerification(root, command, result) {
   const current = readState(root);
   if (!current) return { ok: false, error: 'no state file' };
   const git = gitFacts(root);
   current.verification = [...(current.verification || []),
-    { command, result, head: git.isRepo ? git.head : null, at: new Date().toISOString() }];
+    {
+      command,
+      result,
+      fingerprint: git.isRepo ? implementationFingerprint(root) : null,
+      head: git.isRepo ? git.head : null,
+      at: new Date().toISOString(),
+    }];
   writeState(root, current);
   return { ok: true };
 }
 
-// Critic evidence is anchored to BOTH the implementation identity (HEAD)
-// and the verification evidence it reviewed (verification_index). Any later
-// commit or re-verification makes the critic pass stale. A critic pass is
-// evidence for the CRITIC gate only — never proof of project completion
-// by itself, and never an expansion of the authority set.
+// Critic evidence is anchored to BOTH the implementation fingerprint and
+// the verification evidence it reviewed (verification_index). Any
+// implementation mutation or re-verification makes the critic pass stale.
+// A critic pass is evidence for the CRITIC gate only — never proof of
+// project completion by itself, and never an expansion of authority.
 export const CRITIC_METHODS = ['code-review', 'subagent', 'fresh-prompt'];
 
 export function recordCritic(root, { result, method = 'code-review' } = {}) {
@@ -89,6 +96,7 @@ export function recordCritic(root, { result, method = 'code-review' } = {}) {
   current.critic = {
     result,
     method: CRITIC_METHODS.includes(method) ? method : 'fresh-prompt',
+    fingerprint: git.isRepo ? implementationFingerprint(root) : null,
     head: git.isRepo ? git.head : null,
     verification_index: (current.verification || []).length - 1,
     at: new Date().toISOString(),
