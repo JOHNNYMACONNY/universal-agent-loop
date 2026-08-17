@@ -164,6 +164,26 @@ test('A11: state survives session replacement', (t) => {
   assert.equal(bad.ok, false);
 });
 
+// Finding 2 regression: completed implementation + CURRENT verification
+// result of fail -> REPAIR, never VERIFY. Missing result -> VERIFY.
+test('F2: current verification failure -> REPAIR; missing -> VERIFY', async (t) => {
+  const { initState, recordVerification } = await import('../src/state.js');
+  const root = mkRepo(t);
+  write(root, 'tickets/1-a.md', ticket({ title: 'a', status: 'done', boxes: [[true, 'a']], verification: ['npm test: pass'] }));
+  commit(root, 'claimed done');
+  initState(root, { project: 'p', task: 't', authority: ['READ', 'LOCAL_EDIT', 'LOCAL_TEST', 'LOCAL_COMMIT'] });
+
+  // missing verification result -> VERIFY
+  let r = entryFor(root, { scope: 'substantial', clarity: 'clear' });
+  assert.equal(r.entry.state, 'VERIFY');
+
+  // current verification failure -> REPAIR
+  recordVerification(root, 'npm test', 'fail');
+  r = entryFor(root, { scope: 'substantial', clarity: 'clear' });
+  assert.equal(r.entry.state, 'REPAIR');
+  assert.notEqual(r.entry.state, 'VERIFY');
+});
+
 // Invalid lifecycle transitions are rejected by the state store.
 test('transitions enforce lifecycle edges', (t) => {
   assert.equal(isValidTransition('DISCOVER', 'RECONCILE'), true);

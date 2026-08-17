@@ -110,12 +110,15 @@ export function resolveEntry(reconciled, taskProfile = {}) {
     return { state: 'IMPLEMENT', rule: 'C3', rationale: `accepted spec with eligible ticket ${openTickets[0].path}` };
   }
 
+  // R5c: a CURRENT recorded verification failure wins over generic
+  // unverified handling (lifecycle.md FINDING-2 semantics): fail -> REPAIR.
+  if (latestVerification && latestVerification.result === 'fail') {
+    return { state: 'REPAIR', rule: 'R5', rationale: 'current verification evidence recorded as fail' };
+  }
+
   // R5b: implementation evidenced but unverified, and no open ticket work.
   if ((completeTickets.length > 0 || prs.length > 0) && !verified) {
-    return { state: 'VERIFY', rule: 'R5', rationale: 'implementation claimed complete; verification evidence missing or failing' };
-  }
-  if (latestVerification && latestVerification.result === 'fail') {
-    return { state: 'REPAIR', rule: 'R5', rationale: 'last verification recorded as fail' };
+    return { state: 'VERIFY', rule: 'R5', rationale: 'implementation claimed complete; verification evidence missing' };
   }
 
   // Completion: tickets exist, all done and verified, no open PR work.
