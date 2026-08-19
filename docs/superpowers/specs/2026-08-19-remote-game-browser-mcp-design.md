@@ -1,31 +1,39 @@
 # Remote Game Browser MCP Runtime — Design
 
 Date: 2026-08-19
-Status: accepted design pending implementation plan
+Status: revised design for final review
 
 ## Goal
 
-Build a remotely hosted browser-control app that lets ChatGPT Web autonomously execute the `game-browser-testing` skill against public/deployed browser games without requiring any local computer, localhost service, tunnel, desktop daemon, Codex/OpenCode process, or user-operated browser.
+Build a remotely hosted browser-control app that lets ChatGPT Web autonomously execute the canonical `game-browser-testing` QA policy against public/deployed browser games without requiring any local computer, localhost service, tunnel, desktop daemon, Codex/OpenCode process, user-operated browser, or manual gameplay input during ordinary QA.
 
-This runtime is the execution backend for the already-implemented `game-browser-testing` skill. The skill remains the QA policy/orchestration contract; this runtime supplies bounded browser capabilities and evidence.
+The runtime is an execution/evidence backend. It supplies bounded browser capabilities, cloud session continuity, deployment provenance, and structured evidence. It does **not** decide whether development is complete. `game-browser-testing` remains the QA reasoning/policy layer and `autonomous-dev-loop` remains the outer implementation/VERIFY/REVIEW/REPAIR orchestrator.
 
 ## Hard Acceptance Criterion: No Local Computer
 
-V1 is only successful if the complete test loop can run with the user's local computer powered off.
+V1 is only successful as an autonomous runtime if the complete implementation and QA loop can operate with the user's local computer powered off.
 
-The required path is:
+The intended end state is:
 
 ```text
 ChatGPT Web
-  -> remote MCP/App endpoint
-  -> remotely hosted browser coordinator
-  -> isolated cloud browser sandbox
-  -> public/deployed game URL
-  -> observation/input/evidence
-  -> ChatGPT Web
+  -> autonomous-dev-loop
+  -> GitHub implementation
+  -> remote CI/tests
+  -> deployed preview tied to exact commit
+  -> game-browser-testing
+  -> remote MCP/App
+  -> cloud browser sandbox
+  -> real gameplay interaction/evidence
+  -> PASS | FINDINGS | verification blocker
+  -> REPAIR when material findings exist
+  -> new commit/deployment
+  -> fresh VERIFY
+  -> fresh REVIEW
+  -> repeat autonomously
 ```
 
-The runtime MUST NOT require:
+The runtime and ordinary QA loop MUST NOT require:
 
 - localhost or private-LAN access;
 - a secure tunnel to the user's machine;
@@ -35,11 +43,13 @@ The runtime MUST NOT require:
 - local filesystem or local shell access;
 - the user to manually perform ordinary gameplay inputs during a QA session.
 
-One-time platform/account gates such as connecting an approved app, accepting provider billing, or submitting/approving a Plugin Directory listing are outside the autonomous execution loop and may require the account owner.
+One-time platform/account gates such as connecting an approved plugin/app, selecting an app permission, accepting provider billing, or submitting/approving a Plugin Directory listing are outside the autonomous execution loop and may require the account owner.
 
 ## Product Boundary
 
-V1 targets public/deployed browser games only. It does not attempt to reach localhost, private previews that require credentials, VPN-only sites, personal browser profiles, or local game executables.
+V1 targets public/deployed browser games and game-shaped interactive web builds. It does not attempt to reach localhost, private previews that require game credentials, VPN-only sites, personal browser profiles, or local game executables.
+
+The bounded primitives should remain reusable for non-game interactive web projects later, but game testing is the v1 design center. The runtime MUST NOT be broadened into a generic browser agent to achieve that future reuse.
 
 The service is a separate deployable component from UAL's canonical protocol/reference engine. Until a dedicated repository can be created through the connected GitHub surface, implementation may live as a self-contained deployable package under:
 
@@ -47,50 +57,245 @@ The service is a separate deployable component from UAL's canonical protocol/ref
 apps/game-browser-mcp/
 ```
 
-inside `JOHNNYMACONNY/universal-agent-loop`. It MUST have its own `package.json`, tests, and deployment configuration so the UAL root remains zero-runtime-dependency and the package can later move to a dedicated repository without semantic changes.
+inside `JOHNNYMACONNY/universal-agent-loop`. It MUST have its own package manifest, tests, deployment configuration, and runtime dependencies so the UAL root remains zero-runtime-dependency and the package can later move to a dedicated repository without semantic changes.
 
 ## Platform Architecture
 
-Recommended v1 stack:
+The approved v1 architecture remains:
 
 ```text
 ChatGPT Web
    |
    | MCP / Apps SDK-compatible remote app
    v
-Vercel-hosted Node service
+Stateless Vercel-hosted Node coordinator
    |
-   | validates URL + session + bounded action schema
+   | validates caller + target + provenance + bounded action schema
+   | reads/writes minimal durable session metadata
    v
 Vercel Sandbox
    |
-   | agent-browser + Chromium
+   | agent-browser + Chromium + sandbox-side session/input ledger
    v
-public/deployed browser game
+registered public/deployed browser game
 ```
 
 ### Why Vercel Sandbox
 
-Vercel Sandbox provides isolated cloud microVMs and supports headless Chromium plus `agent-browser`. It can use snapshots to avoid reinstalling browser dependencies on every session and can enforce sandbox network policy.
+Vercel Sandbox provides isolated cloud microVMs and supports headless Chromium plus `agent-browser`. It can use snapshots to avoid reinstalling browser dependencies on every session and supports sandbox network policy.
 
-The coordinator should use Vercel's server-side identity/OIDC when deployed. Personal Vercel tokens are for local/administrative development only and MUST NOT be required by the end-user execution loop.
+The coordinator should use Vercel's server-side identity/OIDC when deployed. Personal Vercel tokens are administrative/development credentials only and MUST NOT be required by the end-user execution loop.
 
-## Session Model
+## Deployment Provenance and Commit-Bound Evidence
 
-Each game-QA session gets a server-owned opaque `session_id` mapped to one isolated browser sandbox.
+A browser PASS against an unknown, mutable, stale, or unproven deployment MUST NOT count as VERIFY evidence.
 
-The browser session persists across MCP calls so ChatGPT can perform iterative sense -> act -> verify rather than relaunching the game for every action.
+Every browser-QA session is bound to a trusted `TargetRegistration` that records at least:
 
-V1 session limits:
+```ts
+interface TargetRegistration {
+  target_registration_id: string;
+  project_id: string;
+  repository: { owner: string; name: string };
+  expected_commit_sha: string;
+  deployment_id: string;          // immutable provider deployment identifier
+  deployment_url: string;         // exact deployed preview URL
+  deployment_origin: string;
+  allowed_hosts: string[];        // target + explicitly approved dependencies
+  created_at: string;
+  expires_at: string;
+  provenance_source: "provider_api" | "signed_provider_event" | "trusted_ci";
+}
+```
 
-- one active target origin per session;
+### Trusted registration path
+
+`TargetRegistration` MUST NOT be creatable from untrusted page content or by a generic MCP browsing tool.
+
+V1 uses a server-side registration/control path separate from the gameplay MCP tools. A registration is accepted only when the service can cryptographically or server-to-server verify project/repository identity and deployment provenance, for example through:
+
+- a deployment-provider API response authenticated by the service;
+- a signed deployment-provider webhook/event; or
+- trusted CI using a narrowly scoped server credential to register the exact deployment it just produced.
+
+The registration workflow must be automatable after every deployment so a normal REPAIR -> redeploy -> VERIFY loop does not require a human to re-allowlist each commit.
+
+A project may have a longer-lived trust configuration containing repository identity and approved host/dependency patterns. Each concrete deployment still receives a short-lived commit-bound `TargetRegistration`.
+
+### Provenance verification at session start
+
+`game_session_start` receives `target_registration_id` and `expected_commit_sha`. The coordinator MUST verify:
+
+1. the registration exists and is unexpired;
+2. the caller is authorized for the registered project;
+3. repository/project identity matches the trusted registration;
+4. `expected_commit_sha` exactly equals the registration's verified commit SHA;
+5. the exact deployment URL/immutable deployment identifier still maps to that commit according to the trusted provenance source;
+6. the target URL/origin and required dependency hosts are within the approved target policy.
+
+Any mismatch returns a non-PASS error such as `PROVENANCE_MISMATCH` or `STALE_DEPLOYMENT` before gameplay begins.
+
+Every observation/evidence packet MUST carry deployment provenance:
+
+```ts
+interface DeploymentProvenance {
+  target_registration_id: string;
+  repository: { owner: string; name: string };
+  expected_commit_sha: string;
+  deployed_commit_sha: string;
+  deployment_id: string;
+  deployment_url: string;
+}
+```
+
+`expected_commit_sha` and `deployed_commit_sha` MUST match for browser evidence to count toward VERIFY.
+
+Any repository implementation mutation after verification invalidates prior runtime/browser evidence under the existing UAL freshness rule. The next VERIFY requires a new matching deployment registration and fresh browser evidence for the new implementation state.
+
+## Confirmation-Free Gameplay as a Hard Autonomy Gate
+
+After any unavoidable one-time plugin/app connection, authorization, or app-permission setup, ordinary gameplay actions MUST be executable from ChatGPT without a separate user confirmation for every keypress, pointer movement, click, observation, reset, or session-control call.
+
+A representative ordinary session is:
+
+```text
+start
+-> observe
+-> input
+-> observe
+-> input
+-> observe
+-> end
+```
+
+The real ChatGPT acceptance test MUST demonstrate that sequence without manual per-action approvals.
+
+The app should use the narrowest possible action surface and permission/approval configuration supported by ChatGPT. However, the design does not assume that confirmation-free permissions are available on every plan, workspace, or future platform version.
+
+If ChatGPT or the Plugin/App permission system forces per-action confirmation for these ordinary isolated-browser operations and that behavior cannot be configured away safely for the target account/surface, the system MUST report:
+
+```text
+BLOCKED_PLATFORM_AUTONOMY
+```
+
+`BLOCKED_PLATFORM_AUTONOMY` is a `CHATGPT_LOOP_READY` blocker, not a browser-game defect and not a successful runtime result. The system MUST NOT represent a confirmation-dependent path as an autonomous completed loop.
+
+This blocker is intentionally separate from the current `game-browser-testing` session statuses (`PASS | FINDINGS | BLOCKED_CAPABILITY`): it describes the ChatGPT/App execution surface, not the game-browser session itself.
+
+## Server-Side Target Registration and Deny-by-Default Egress
+
+The service MUST NOT function as a generic remote public-web browser proxy.
+
+### Project trust configuration
+
+Before a deployment can be registered, a project trust configuration defines:
+
+```ts
+interface ProjectTrustConfig {
+  project_id: string;
+  repository: { owner: string; name: string };
+  approved_deployment_host_patterns: string[];
+  approved_dependency_hosts: string[];
+  approved_redirect_hosts: string[];
+}
+```
+
+The target and dependency allowlist is server-side configuration or trusted signed registration data. A model-supplied URL alone cannot expand it.
+
+### Required network policy
+
+Each sandbox session MUST receive a deny-by-default network policy where the provider supports it. Allowed egress is limited to:
+
+- the registered target/deployment host;
+- explicitly approved game asset/API/CDN hosts from trusted project configuration;
+- explicitly approved project-owned redirect hosts;
+- infrastructure endpoints strictly required for the browser runtime itself.
+
+All other outbound hosts/CIDRs are denied.
+
+URL-layer validation remains required even when sandbox network policy exists. The two controls are defense in depth, not alternatives.
+
+Minimum URL/SSRF rules:
+
+- HTTPS only for real v1 targets, except synthetic test fixtures inside controlled automated test infrastructure;
+- reject `localhost`, loopback, link-local, RFC1918/private ranges, multicast, unspecified, metadata-service, and reserved/internal targets;
+- resolve DNS and reject private/reserved resolutions before access;
+- revalidate redirects and any observed navigation-origin changes;
+- block DNS rebinding/private resolution on subsequent resolution checks;
+- prevent navigation to `file:`, `data:`, `javascript:`, browser-internal schemes, and non-HTTP(S) protocols;
+- reject any target/redirect/dependency host not present in trusted project configuration;
+- log policy rejections without leaking sensitive headers/content.
+
+Page requests to unrelated third-party origins are blocked even when the page attempts to initiate them. If a real game requires another legitimate host, it must be added to trusted project configuration rather than dynamically accepted from page content.
+
+## Stateless Coordinator and Recoverable Session Model
+
+The Vercel/server coordinator MUST be stateless across requests. Correctness MUST NOT depend on one warm process, one function instance, or an in-memory `Map` of active sessions.
+
+Subsequent MCP calls may land on different coordinator instances and MUST reconnect to the same cloud sandbox/browser session using durable remote metadata.
+
+### Opaque session identity
+
+The caller receives an unguessable opaque `session_id`. Server-side durable session state stores only the minimum required to reconnect and enforce safety:
+
+```ts
+interface SessionRecord {
+  session_id: string;
+  sandbox_id: string;
+  target_registration_id: string;
+  target_origin: string;
+  owner_binding: string;       // privacy-preserving binding to authenticated app principal
+  created_at: string;
+  last_seen_at: string;
+  idle_expires_at: string;
+  absolute_expires_at: string;
+  action_seq: number;
+  observation_seq: number;
+  held_keys: string[];
+  held_pointer_buttons: string[];
+  lifecycle: "ACTIVE" | "RECOVERY_REQUIRED" | "ENDING";
+}
+```
+
+The durable session store MUST support TTL/expiry and concurrency control/compare-and-set or an equivalent serialization mechanism. Exact storage provider is an implementation-plan decision; it must be remotely hosted and require no local computer.
+
+The `owner_binding` is derived from the authenticated app principal or another stable signed connection identity. Raw personal identifiers need not be stored. If the app surface cannot provide a safe ownership binding, the runtime must fail closed rather than permit cross-user session reuse.
+
+### Browser process recovery
+
+A durable session record proves which sandbox should exist; it does not prove that Chromium/browser state still exists.
+
+On every resumed call, the coordinator validates the sandbox and browser driver are still alive and correspond to the expected session. If the actual browser process/session is gone, the runtime MUST NOT silently claim state persistence.
+
+It returns:
+
+```text
+SESSION_EXPIRED
+```
+
+or, for an ambiguous partially executed input batch:
+
+```text
+SESSION_RECOVERY_REQUIRED
+```
+
+A fresh session/reset may then be deliberately created by the caller. It must never be presented as continuation of the lost browser state.
+
+## Session Limits
+
+Each game-QA session is limited to one registered target deployment.
+
+V1 requires:
+
+- one registered target/deployment per session;
 - bounded idle and absolute lifetime;
 - bounded total action count;
 - explicit end/cleanup;
 - automatic cleanup after expiry/error;
-- no browser state reuse across unrelated users/sessions.
+- no browser state reuse across unrelated users/sessions;
+- no cross-deployment continuation after a new implementation commit.
 
-Persistent sandbox identity is an optimization only. Cross-user cookies, local storage, credentials, or personal sessions MUST NOT be shared.
+Persistent sandbox identity is a continuity mechanism, not permission to reuse cookies/local storage across unrelated sessions.
 
 ## MCP Tool Surface
 
@@ -102,17 +307,20 @@ Input:
 
 ```ts
 {
-  url: string;
+  target_registration_id: string;
+  expected_commit_sha: string;
   viewport?: { width: number; height: number };
 }
 ```
 
 Behavior:
 
-- validate and normalize the public HTTPS target;
-- reject private/reserved/local network targets;
-- create isolated browser sandbox/session;
-- navigate to the target;
+- authenticate/bind the caller;
+- load the trusted target registration;
+- validate exact commit/deployment provenance;
+- enforce target and deny-by-default network policy;
+- create an isolated browser sandbox/session;
+- navigate only to the registered deployment URL;
 - return session metadata and an initial observation.
 
 Output includes:
@@ -121,6 +329,7 @@ Output includes:
 {
   session_id: string;
   target_origin: string;
+  deployment_provenance: DeploymentProvenance;
   observation: GameObservation;
   limits: SessionLimits;
 }
@@ -131,24 +340,33 @@ Output includes:
 Input:
 
 ```ts
-{ session_id: string }
+{
+  session_id: string;
+  expected_observation_seq?: number;
+}
 ```
 
 Returns the strongest bounded evidence available:
 
 ```ts
 {
+  session_id: string;
+  observation_seq: number;
+  action_seq: number;
+  deployment_provenance: DeploymentProvenance;
   url: string;
   title?: string;
   screenshot?: image_reference;
   accessibility_snapshot?: string;
   console_errors?: ConsoleError[];
   failed_requests?: FailedRequest[];
-  timestamp: string;
+  captured_at: string;
 }
 ```
 
-Screenshot/media payloads should be returned using the Apps/MCP-supported resource mechanism rather than oversized inline base64 when practical.
+Screenshot/media payloads should use the Apps/MCP-supported resource mechanism rather than oversized inline base64 when practical.
+
+An observation is evidence only for its own deployment provenance and sequence position.
 
 ### `game_input`
 
@@ -157,9 +375,13 @@ Input:
 ```ts
 {
   session_id: string;
+  action_batch_id: string;
+  expected_action_seq: number;
   actions: GameAction[];
 }
 ```
+
+`action_batch_id` is required and unique per logical batch. It provides retry-safe idempotency.
 
 Allowed actions are bounded gameplay primitives only:
 
@@ -168,6 +390,7 @@ Allowed actions are bounded gameplay primitives only:
 | { type: "key_up"; key: AllowedKey }
 | { type: "press"; key: AllowedKey; duration_ms?: number }
 | { type: "pointer_move"; x: number; y: number }
+| { type: "pointer_move_relative"; delta_x: number; delta_y: number }
 | { type: "pointer_down"; button?: "left" | "middle" | "right" }
 | { type: "pointer_up"; button?: "left" | "middle" | "right" }
 | { type: "click"; x: number; y: number; button?: "left" | "middle" | "right" }
@@ -175,9 +398,48 @@ Allowed actions are bounded gameplay primitives only:
 | { type: "wait"; duration_ms: number }
 ```
 
-The server validates action count, coordinates, key allowlist, and duration. It does not accept raw browser commands, arbitrary selectors with mutations, shell commands, or arbitrary JavaScript.
+`pointer_move_relative` exists for bounded mouse-look/pointer-lock style gameplay. Relative deltas are capped per action and per batch; it is not a generic raw-CDP escape hatch.
 
-Output contains action execution metadata and a lightweight post-action observation summary so the caller can decide whether to run `game_observe` for stronger verification.
+The server validates batch/action count, coordinates/deltas, key allowlist, wait/press durations, sequence, and session limits. It does not accept raw browser commands, arbitrary selectors with mutations, shell commands, unrestricted navigation, or arbitrary JavaScript.
+
+Output includes:
+
+```ts
+{
+  session_id: string;
+  action_batch_id: string;
+  action_seq_before: number;
+  action_seq_after: number;
+  observation_seq: number;
+  duplicate: boolean;
+  execution_status: "COMPLETE" | "REJECTED" | "RECOVERY_REQUIRED";
+  post_action_summary?: object;
+}
+```
+
+### Input idempotency and sequencing
+
+Before executing a batch, the runtime durably records the `action_batch_id`, expected sequence, and acceptance state. A retry of an already completed `action_batch_id` returns the recorded result and MUST NOT execute the actions again.
+
+A new batch is accepted only when `expected_action_seq` equals the current server sequence. This prevents stale/out-of-order actions from silently running.
+
+If the coordinator/browser worker fails in a window where it cannot prove whether a partially executed batch completed, the system MUST NOT retry the batch blindly. It marks the session `RECOVERY_REQUIRED`, releases held input state if the browser is reachable, and returns `ACTION_STATE_UNKNOWN` / `SESSION_RECOVERY_REQUIRED`. The caller must reset or start fresh before further gameplay actions.
+
+The runtime maintains monotonic `action_seq` and `observation_seq` values. Evidence and findings can therefore cite an ordered action/observation history.
+
+### Fail-safe input release
+
+The runtime tracks held keys and pointer buttons and MUST attempt to release all held input before further cleanup/recovery on:
+
+- timeout;
+- browser/driver error;
+- reset;
+- session expiration;
+- session end;
+- partial action failure;
+- ambiguous action-batch recovery.
+
+Fail-safe release is idempotent. Cleanup attempts are best-effort when the browser process is already gone; the session must still be marked expired/recovery-required rather than pretending the release was observed.
 
 ### `game_read_state`
 
@@ -195,10 +457,11 @@ Input:
 Behavior:
 
 - only reads from `window.__GAME_TEST__` (or a future explicitly approved equivalent);
-- serializes JSON-compatible state;
+- serializes JSON-compatible data;
 - rejects function invocation;
 - rejects assignment/mutation;
-- applies output-size/depth limits.
+- applies output-size/depth limits;
+- returns session and deployment provenance with the state sample.
 
 This tool is optional evidence. It does not replace screenshots/runtime evidence for user-visible acceptance criteria.
 
@@ -213,7 +476,12 @@ Input:
 }
 ```
 
-Resets the game to a known state without allowing navigation to an arbitrary new origin. `target` returns to the originally validated URL.
+Behavior:
+
+1. fail-safe release all held keys/buttons;
+2. reload the current registered deployment or return to its registered target URL;
+3. never navigate to an arbitrary new origin;
+4. advance observation sequencing and return fresh post-reset evidence.
 
 ### `game_session_end`
 
@@ -223,7 +491,14 @@ Input:
 { session_id: string }
 ```
 
-Stops the sandbox/session and deletes server-side ephemeral session metadata.
+Behavior:
+
+1. mark the session `ENDING` to reject new inputs;
+2. fail-safe release held input;
+3. stop the browser/sandbox;
+4. expire/delete durable ephemeral session metadata and batch ledger according to retention policy.
+
+Repeated end calls are idempotent and do not resurrect the session.
 
 ## Deliberately Excluded From V1
 
@@ -232,97 +507,104 @@ The MCP surface MUST NOT expose:
 - arbitrary shell/terminal execution;
 - arbitrary CDP/Puppeteer/Playwright commands;
 - unrestricted JavaScript evaluation;
-- text/password form filling as a generic web bot;
+- unrestricted URL navigation;
+- a model-accessible target-registration bypass;
+- generic text/password form filling as a web bot;
 - credential stores or personal Chrome profiles;
 - file upload/download from a user's computer;
 - payment/purchase actions;
 - local/private network navigation;
-- cross-origin browsing unrelated to the project under test;
+- cross-origin browsing unrelated to trusted project configuration;
 - repository mutation, deployment, merge, or publication.
 
 If a later game requires a missing primitive, extend the typed game-action contract through review rather than adding a generic escape hatch.
-
-## URL and Network Security
-
-The coordinator validates the initial URL before creating a session.
-
-Minimum rules:
-
-- HTTPS only for v1, except explicitly synthetic test fixtures in automated tests;
-- reject `localhost`, loopback, link-local, RFC1918/private ranges, multicast, unspecified, and metadata-service targets;
-- resolve DNS and reject resolved private/reserved IPs to mitigate SSRF/DNS rebinding;
-- revalidate redirects and navigation-origin changes;
-- prevent navigation to `file:`, `data:`, `javascript:`, browser-internal schemes, and non-HTTP(S) protocols;
-- apply Vercel Sandbox network policy where practical as a second control layer;
-- log policy rejections without leaking sensitive headers/content.
-
-Normal project assets/CDNs/API calls may load as required by the game, but navigation away from the approved project-associated origin requires explicit project-owned redirect handling. Unrelated third-party pages are not interaction targets.
 
 ## Evidence and Error Contract
 
 Every tool returns structured machine-readable status plus concise human-readable detail.
 
-Canonical result classes:
+Canonical result/error classes include:
 
 ```text
 OK
 INVALID_ARGUMENT
+AUTH_CONTEXT_UNAVAILABLE
 SESSION_NOT_FOUND
 SESSION_EXPIRED
+SESSION_RECOVERY_REQUIRED
 TARGET_BLOCKED
+PROVENANCE_MISMATCH
+STALE_DEPLOYMENT
 CAPABILITY_UNAVAILABLE
 ACTION_REJECTED
+ACTION_STATE_UNKNOWN
 BROWSER_ERROR
 LIMIT_EXCEEDED
 ```
 
-Browser failures must not be converted into successful observations. Evidence must identify the session and observation sequence so the `game-browser-testing` skill can correlate sense -> act -> verify steps.
+Browser failures, stale deployments, provenance mismatches, confirmation requirements, and lost sessions MUST NOT be converted into successful observations.
+
+Evidence MUST identify:
+
+- `session_id`;
+- deployment provenance;
+- `action_seq`;
+- `observation_seq`;
+- capture time;
+- any coverage limitation affecting interpretation.
 
 ## Resource and Cost Bounds
 
 V1 requires explicit bounds to keep autonomous loops safe and affordable.
 
-Initial defaults should be centralized configuration constants and covered by tests, for example:
+Initial defaults are centralized configuration constants and covered by tests, for example:
 
 - max session lifetime: 15 minutes;
 - max idle time: 3 minutes;
 - max actions per `game_input`: 20;
 - max actions per session: 500;
 - max single wait: 10 seconds;
+- max relative pointer delta per action/batch;
 - max screenshot dimensions/payload;
 - max instrumentation JSON bytes/depth;
-- max console/network events retained per observation.
+- max console/network events retained per observation;
+- max action-batch ledger retention bounded to session lifetime plus short retry window.
 
-Exact values may be tuned from real usage without changing the MCP semantic contract.
+Exact numeric values may be tuned from real usage without changing the semantic contract.
 
-## Authentication and User Identity
+## Authentication and Ownership
 
-V1 does not need the end user to authenticate into the game target.
+V1 does not authenticate the user into the game target and accepts no game-site credentials.
 
-The ChatGPT app/MCP server still needs an app-level abuse boundary. The initial implementation may use deployment/app authentication appropriate to the Apps SDK/MCP publication path, but MUST NOT require the user to manage Vercel credentials.
+The ChatGPT app/MCP service requires an app-level abuse and session-ownership boundary. Each request must expose or derive a stable authenticated app principal/signed connection identity sufficient to compute `owner_binding` and prevent one caller from resuming another caller's session.
 
-No game-site credentials are accepted in v1.
+The user MUST NOT need to manage Vercel credentials. Provider service credentials/OIDC and deployment-registration credentials are server-side only.
 
-## OpenAI / Plugin Distribution Boundary
+If a supported ChatGPT/plugin surface cannot provide the identity/permission behavior required for safe session ownership, that is an external platform blocker for `CHATGPT_LOOP_READY`, not permission to weaken isolation.
 
-The implementation targets a remote MCP/Apps SDK-compatible service suitable for eventual Plugin Directory submission.
+## OpenAI Plugin/App and Canonical Skill Packaging
 
-The runtime architecture MUST remain valid even before directory approval: it can be protocol-tested directly and later connected to ChatGPT through whatever developer/testing surface OpenAI currently permits.
+The distribution target is a Plugin Directory listing that packages the browser MCP/App together with the canonical `game-browser-testing` skill so a fresh ChatGPT conversation receives the intended QA policy and browser capability as one workflow package.
 
-Directory approval, plan eligibility, and Connect availability are external platform gates. They must not be represented as runtime implementation completion.
+Canonical source of truth remains:
 
-The app should use narrow tool descriptions, accurate annotations/permissions, a privacy policy, and clear safety behavior suitable for review. Browser action tools should be classified conservatively as action-capable even when their target is an isolated test browser.
+```text
+JOHNNYMACONNY/universal-agent-loop/skills/game-browser-testing/SKILL.md
+```
 
-## Privacy
+The runtime package MUST NOT maintain an independently edited copy of that skill.
 
-V1 should minimize retention:
+Current OpenAI product documentation supports plugins containing both skills and apps. It does not establish a documented mechanism for an MCP server to dynamically import an Agent Skill from an arbitrary canonical Git URL at invocation time. Therefore the release/submission process should:
 
-- ephemeral browser/session state;
-- no personal browser cookies;
-- no credentials;
-- no long-term screenshot retention by default;
-- logs contain operational metadata, policy errors, timings, and bounded failure diagnostics, not full page contents;
-- privacy policy states what target URLs/evidence may transiently pass through the service.
+1. package the canonical UAL skill as the plugin's skill component using the supported Plugin/Skill mechanism;
+2. record the exact UAL commit SHA and skill content hash used for the package;
+3. fail packaging/release if the packaged skill does not match that canonical source;
+4. treat any necessary copied bytes as a generated release artifact, not a second source of truth;
+5. prefer a future official direct-reference/import mechanism if OpenAI documents one before implementation/submission.
+
+This removes reliance on GitHub fallback for fresh installed-plugin conversations while preserving canonical UAL ownership of the policy. The existing GitHub fallback in `autonomous-dev-loop` remains useful when the plugin/skill bundle is not installed.
+
+Plugin Directory availability, plan eligibility, connection availability, confirmation policy, and approval remain external platform gates.
 
 ## Integration With `game-browser-testing`
 
@@ -339,37 +621,92 @@ baseline
 -> PASS | FINDINGS | BLOCKED_CAPABILITY
 ```
 
-The MCP runtime does not independently decide whether a game passed. It executes bounded actions and returns evidence.
+The runtime does not independently declare game PASS/FINDINGS. It executes bounded actions and returns evidence/errors.
 
-The `autonomous-dev-loop` remains responsible for:
+`BLOCKED_PLATFORM_AUTONOMY` is intentionally evaluated outside the current skill session-status contract because it is a ChatGPT/App invocation-policy failure, not a browser capability failure.
+
+The runtime supplies deployment provenance so a skill/outer verifier can reject stale or mismatched deployments. A runtime observation without matching commit-bound provenance is insufficient verification evidence.
+
+## Integration With `autonomous-dev-loop` and UAL
+
+The outer loop remains responsible for:
 
 ```text
 IMPLEMENT
--> VERIFY via game-browser-testing
+-> remote deterministic tests/CI
+-> resolve exact commit deployment
+-> VERIFY via game-browser-testing + runtime evidence
 -> REVIEW
 -> REPAIR when material FINDINGS
+-> new commit/deployment
 -> fresh VERIFY
 -> fresh REVIEW
 ```
 
-A repository change invalidates previous game-browser evidence.
+This preserves current UAL principles:
+
+- runtime/deployed behavior is strong implementation-truth evidence only when tied to the implementation being evaluated;
+- self-reported completion is weak evidence;
+- repository mutations stale prior runtime/browser evidence;
+- verification/review evidence never expands publication/deployment/credential authority;
+- browser/runtime tools remain bounded subtasks and cannot terminate the outer lifecycle.
+
+The runtime itself has no authority to mutate GitHub, deploy, merge, publish, alter billing, or change production data.
+
+## Real Game-Shaped Remote Acceptance Fixture
+
+A plain HTML page is not sufficient as the only live browser acceptance target.
+
+Before `RUNTIME_COMPLETE`, the project MUST have a remotely hosted safe Canvas/WebGL game-shaped fixture or an explicitly approved deployed game that exercises the real interaction shape.
+
+The fixture/acceptance run MUST demonstrate, across multiple MCP calls:
+
+- canvas/WebGL surface focus;
+- keyboard input;
+- explicit `key_down` + `key_up`;
+- held movement across an observation boundary;
+- simultaneous/combined movement where relevant (for example forward + strafe);
+- pointer/click input;
+- bounded relative pointer movement and pointer-lock/mouse-look behavior when the representative game requires it;
+- screenshots after meaningful state changes;
+- console/runtime error capture;
+- failed network request capture where supported by the backend;
+- reset/reload;
+- persistence of the same browser session across separate stateless coordinator calls;
+- ordered action/observation sequencing;
+- idempotent retry of an `action_batch_id` without duplicate gameplay input;
+- fail-safe release behavior for held input;
+- deployment provenance in returned evidence.
+
+The fixture should intentionally expose at least one safe expected console diagnostic and one expected failed request so capture paths can be proven rather than merely present in schemas.
+
+### Performance evidence limitation
+
+Cloud-sandbox FPS/timing is useful for detecting severe stalls, hangs, crashes, runaway resource use, or gross regressions. It MUST NOT be treated as authoritative proof of production frame-rate/performance targets unless the sandbox environment has been explicitly calibrated for that purpose.
+
+`window.__GAME_TEST__` FPS/performance values and browser timing may support diagnostics, but optimization/performance acceptance criteria require an appropriately calibrated environment.
 
 ## Testing Strategy
 
-Use TDD. The service needs deterministic unit/contract tests before real sandbox integration tests.
+Use TDD during implementation. The service needs deterministic unit/contract tests before provider-backed integration tests.
 
 Required test groups:
 
-1. URL/SSRF policy: private IPs, DNS resolution, redirects, forbidden schemes.
-2. Session lifecycle: start, lookup, expiry, end, cleanup, per-session isolation.
-3. Action validation: key allowlist, coordinates, waits, action/session limits.
-4. Instrumentation reader: JSON-only read semantics, function/mutation rejection, size/depth bounds.
-5. MCP schemas: stable tool names, required/optional inputs, machine-readable error results.
-6. Browser adapter: command generation/parsing isolated behind one interface with fake adapter tests.
-7. Sandbox integration: launch browser, open a synthetic public fixture, screenshot/observe, input, reload, cleanup.
-8. Security regression: redirects/DNS policy and no arbitrary command/JS escape hatch.
+1. **Deployment provenance** — trusted registration, exact SHA match, stale/mismatched deployment rejection, immutable deployment ID handling.
+2. **Target registration/SSRF** — project allowlist, private IPs, DNS resolution/rebinding, redirects, forbidden schemes, unregistered hosts.
+3. **Deny-by-default egress** — only registered target/dependency/runtime hosts permitted; unrelated third-party requests blocked.
+4. **Stateless session lifecycle** — start on one coordinator instance, resume on another, expiry, browser-loss detection, end, cleanup, ownership isolation.
+5. **Input idempotency/sequencing** — duplicate `action_batch_id`, stale `expected_action_seq`, concurrent requests, action ledger, monotonic sequences.
+6. **Fail-safe input release** — timeout, browser error, reset, expiration, end, partial failure, recovery-required cases.
+7. **Action validation** — key allowlist, coordinates/deltas, waits, relative pointer bounds, action/session limits.
+8. **Instrumentation reader** — JSON-only read semantics, function/mutation rejection, size/depth bounds.
+9. **MCP schemas** — stable narrow tool names, required/optional inputs, machine-readable error results, no generic escape hatch.
+10. **Browser adapter** — command generation/parsing isolated behind one interface with fake adapter tests.
+11. **Remote game-shaped browser integration** — the acceptance fixture requirements above, across multiple calls and stateless coordinator instances.
+12. **Security regression** — no arbitrary shell, JS, CDP/Playwright passthrough, target registration bypass, credential path, or generic browsing.
+13. **Autonomy acceptance** — real ChatGPT/plugin invocation confirms ordinary gameplay calls do not require per-action human approval; otherwise `BLOCKED_PLATFORM_AUTONOMY`.
 
-Live Vercel Sandbox tests that consume provider resources should be separately gated from hermetic unit tests.
+Provider-backed browser tests that consume cloud resources are separately gated from hermetic unit tests but are mandatory for the relevant completion gate.
 
 ## Deployment Strategy
 
@@ -378,16 +715,104 @@ Live Vercel Sandbox tests that consume provider resources should be separately g
 Production setup should use:
 
 - Node runtime;
+- a remote durable session/idempotency store with TTL and concurrency control;
 - Vercel Sandbox via server-side identity/OIDC;
 - prebuilt Sandbox snapshot containing browser dependencies and `agent-browser` for fast startup;
+- mandatory sandbox network policy generated from trusted target registration;
+- trusted server-side deployment-provenance registration/verification;
 - rate limiting/abuse controls before directory submission;
 - production privacy/terms metadata required by the app submission flow.
 
-Creating the browser snapshot is an administrative deployment step, not a requirement for each test session.
+Creating the browser snapshot and initial project trust configuration are administrative deployment steps, not requirements for each QA session. Per-deployment commit registration must be automatable through provider/CI integration.
 
-## Implementation Files
+## Privacy and Retention
 
-Planned package boundary:
+V1 minimizes retention:
+
+- ephemeral browser/session state;
+- no personal browser cookies/profiles;
+- no game credentials;
+- no long-term screenshot retention by default;
+- durable session metadata is limited to reconnect/safety/idempotency fields and expires promptly;
+- idempotency/action ledger is bounded to the session plus a short retry window;
+- logs contain operational metadata, provenance IDs, policy errors, timings, and bounded failure diagnostics, not full page contents;
+- ownership bindings are privacy-preserving derived identifiers where practical;
+- privacy policy states what target URLs/evidence may transiently pass through the service.
+
+## Completion Gates
+
+Runtime implementation and end-to-end ChatGPT autonomy are separate gates and MUST NOT be conflated.
+
+### `RUNTIME_COMPLETE`
+
+The runtime may claim `RUNTIME_COMPLETE` only when:
+
+- service implementation is complete;
+- hermetic unit/contract tests pass;
+- security/SSRF/egress tests pass;
+- deployment-provenance tests pass;
+- stateless session recovery/idempotency/fail-safe-release tests pass;
+- the narrow MCP schemas match this design;
+- the service is remotely deployed and functioning;
+- the real game-shaped remote acceptance fixture passes against an actual cloud browser sandbox;
+- the remote acceptance run demonstrates browser-session continuity across multiple coordinator calls;
+- the run occurs with no local browser/game/runtime dependency;
+- no known material runtime review findings remain.
+
+`RUNTIME_COMPLETE` does **not** claim that ChatGPT can yet execute the entire development loop confirmation-free.
+
+### `CHATGPT_LOOP_READY`
+
+The system may claim `CHATGPT_LOOP_READY` only after the real end-to-end path has been demonstrated from ChatGPT itself with the local computer uninvolved:
+
+```text
+ChatGPT
+-> GitHub implementation change
+-> remote CI/verification
+-> exact commit-bound deployment
+-> game-browser-testing policy
+-> remote MCP browser session
+-> confirmation-free autonomous gameplay interaction
+-> commit-bound evidence returned
+-> intentional/material fixture defect produces FINDINGS
+-> outer loop routes to REPAIR
+-> new implementation commit
+-> new exact deployment registration
+-> fresh browser verification
+-> fresh review
+-> final clean evidence
+```
+
+The acceptance demonstration MUST prove:
+
+- no localhost/tunnel/local Chrome/desktop daemon/local coding-agent process participates;
+- ordinary gameplay tool calls do not require manual per-action confirmations;
+- browser evidence corresponds to the exact implementation commit under verification;
+- a material browser finding actually causes REPAIR rather than being merely reported;
+- the repaired implementation produces a new deployment and stale prior browser evidence is not reused;
+- fresh VERIFY and fresh REVIEW occur after repair.
+
+If the ChatGPT/app surface forces per-action confirmation and it cannot be safely configured away, report `BLOCKED_PLATFORM_AUTONOMY` and do not claim `CHATGPT_LOOP_READY`.
+
+If plan/workspace/region/plugin availability prevents the app from being invoked on the target ChatGPT account, report the exact external platform gate separately. That does not invalidate `RUNTIME_COMPLETE`, but it prevents `CHATGPT_LOOP_READY` until the gate is resolved.
+
+### External distribution gates
+
+The following are tracked separately from both completion claims:
+
+- Plugin Directory submission status;
+- Plugin Directory approval;
+- target-plan eligibility/Connect availability;
+- app permission/confirmation options available to the target account;
+- provider billing/account-owner administrative setup.
+
+None may be silently treated as complete or inferred from runtime test results.
+
+## Implementation Boundary
+
+This document defines architecture and acceptance contracts only. It does not authorize implementation planning, code changes, deployment, Plugin Directory submission, billing changes, or provider credential actions.
+
+Expected implementation package boundary remains:
 
 ```text
 apps/game-browser-mcp/
@@ -399,33 +824,14 @@ apps/game-browser-mcp/
     mcp.ts
     config.ts
     errors.ts
-    security/url-policy.ts
-    sessions/session-store.ts
-    browser/browser-adapter.ts
-    browser/vercel-sandbox-browser.ts
-    tools/session-start.ts
-    tools/observe.ts
-    tools/input.ts
-    tools/read-state.ts
-    tools/reset.ts
-    tools/session-end.ts
+    provenance/
+    security/
+    sessions/
+    browser/
+    tools/
   tests/
-    *.test.ts
+  fixtures/
   scripts/
-    create-browser-snapshot.ts
 ```
 
-Exact file decomposition may be adjusted during the implementation plan as long as responsibilities remain isolated.
-
-## Completion Contract
-
-Runtime v1 is implementation-complete only when:
-
-- its hermetic unit/contract suite passes;
-- security/SSRF tests pass;
-- MCP tool schemas match this design;
-- at least one remote cloud browser integration run demonstrates start -> observe -> input -> observe -> end against a safe public/synthetic target;
-- the run occurs with no local browser or local game runtime dependency;
-- no known material review findings remain;
-- deployment/provider limitations are reported honestly;
-- Plugin Directory submission/approval is reported separately from runtime completion.
+Exact file decomposition, storage provider, and provider-specific provenance adapter details are implementation-plan decisions so long as they satisfy this design.
