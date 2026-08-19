@@ -13,6 +13,7 @@ const trust = {
   projectId: 'project-1',
   repositoryOwner: 'owner',
   repositoryName: 'repo',
+  targetEntryPath: '/',
   approvedDeploymentHostPatterns: ['*.vercel.app'],
   approvedDependencyHosts: ['cdn.example.com'],
   approvedRedirectHosts: ['play.example.com'],
