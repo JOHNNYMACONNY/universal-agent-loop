@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import type { TargetRegistration } from '../src/contracts.js';
 import { RuntimeError } from '../src/errors.js';
 import { buildSandboxNetworkPolicy } from '../src/security/network-policy.js';
-import { createRebindingAwareResolver, validateRegisteredUrl } from '../src/security/url-policy.js';
+import { createRebindingAwareResolver, validateRegisteredUrl, type DnsResolver } from '../src/security/url-policy.js';
 
 const registration: TargetRegistration = {
   target_registration_id: 'reg_1',
@@ -20,9 +20,9 @@ const registration: TargetRegistration = {
   provenance_source: 'provider_api',
 };
 
-const publicResolve = async () => [{ address: '93.184.216.34', family: 4 as const }];
+const publicResolve: DnsResolver = async () => [{ address: '93.184.216.34', family: 4 }];
 
-async function blocked(url: string, resolve = publicResolve): Promise<void> {
+async function blocked(url: string, resolve: DnsResolver = publicResolve): Promise<void> {
   await assert.rejects(
     validateRegisteredUrl(new URL(url), registration, resolve),
     (error: unknown) => error instanceof RuntimeError && error.code === 'TARGET_BLOCKED',
@@ -46,15 +46,17 @@ test('rejects localhost and private/reserved address families', async () => {
     '127.0.0.1', '10.0.0.1', '172.16.1.1', '192.168.1.1', '169.254.169.254',
     '0.0.0.0', '224.0.0.1', '100.64.0.1', '198.18.0.1', '::1', 'fc00::1', 'fe80::1', '::',
   ]) {
-    await blocked('https://game.example.com', async () => [{ address, family: address.includes(':') ? 6 as const : 4 as const }]);
+    const resolver: DnsResolver = async () => [{ address, family: address.includes(':') ? 6 : 4 }];
+    await blocked('https://game.example.com', resolver);
   }
 });
 
 test('rejects when any DNS answer is private even if another answer is public', async () => {
-  await blocked('https://game.example.com', async () => [
-    { address: '93.184.216.34', family: 4 as const },
-    { address: '10.0.0.5', family: 4 as const },
-  ]);
+  const resolver: DnsResolver = async () => [
+    { address: '93.184.216.34', family: 4 },
+    { address: '10.0.0.5', family: 4 },
+  ];
+  await blocked('https://game.example.com', resolver);
 });
 
 test('rebinding-aware resolver fails closed if a later resolution turns private', async () => {
@@ -62,8 +64,8 @@ test('rebinding-aware resolver fails closed if a later resolution turns private'
   const resolver = createRebindingAwareResolver(async () => {
     calls += 1;
     return calls === 1
-      ? [{ address: '93.184.216.34', family: 4 as const }]
-      : [{ address: '127.0.0.1', family: 4 as const }];
+      ? [{ address: '93.184.216.34', family: 4 }]
+      : [{ address: '127.0.0.1', family: 4 }];
   });
   await validateRegisteredUrl(new URL('https://game.example.com'), registration, resolver);
   await assert.rejects(
