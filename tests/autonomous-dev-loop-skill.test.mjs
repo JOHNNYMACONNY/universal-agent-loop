@@ -63,6 +63,15 @@ test('fresh ChatGPT sessions can load Matt skills without vendoring them', async
   assert.match(markdown, /(?:do not|never).*(?:copy|vendor|cached).*skill/i);
 });
 
+test('nested skill inputs are resolved from repository evidence when possible', async () => {
+  const markdown = await loadSkill();
+
+  assert.match(markdown, /fixed point|merge-base/i);
+  assert.match(markdown, /spec (?:path|source)|accepted spec/i);
+  assert.match(markdown, /do not ask the user.*(?:already|available|discoverable).*(?:repo|repository)/i);
+  assert.match(markdown, /harness-specific|harness assumptions/i);
+});
+
 test('ChatGPT remains the implementation plane unless delegation is explicitly requested', async () => {
   const markdown = await loadSkill();
 
