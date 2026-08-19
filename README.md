@@ -36,6 +36,11 @@ never own or terminate it.
   runtime/browser evidence without a separate coding agent. It is **not** a
   full UAL harness adapter when ChatGPT cannot execute the reference engine
   or persist local UAL state.
+- `skills/game-browser-testing/` — a bounded ChatGPT browser-QA companion skill
+  for autonomous exploratory testing of public/deployed browser games, with
+  optional scenario checks and optional read-oriented `window.__GAME_TEST__`
+  instrumentation. It returns evidence/findings to its caller and does not own
+  the outer development lifecycle.
 - `tests/` — fixture-driven tests over normal and adversarial repository
   states plus static skill-conformance tests. Run with `npm test` (Node >= 18,
   zero dependencies).
@@ -46,6 +51,10 @@ never own or terminate it.
   implement them; they do not redefine them.
 - Companion skills may reuse UAL invariants but must state capability
   limitations explicitly rather than claiming adapter parity.
+- Browser-control infrastructure is an external capability. Do not embed a
+  remote browser service, MCP server, Playwright runtime, or other browser
+  dependency into the canonical protocol/reference engine merely to satisfy a
+  companion skill.
 - Deterministic parsing and state transitions live in the engine. Judgment
   calls (task scope, architecture decisions, critic review) belong to the
   agent and are passed into the engine as explicit inputs.
@@ -72,6 +81,13 @@ control-plane skill. It should automatically route reusable engineering
 skills, implement through connected GitHub, verify through observable
 CI/runtime evidence, and repair/re-review until material gates pass or a real
 external blocker is reached.
+
+When a public/deployed browser game and an actual browser-control capability
+are available, that loop can route interactive verification to
+`skills/game-browser-testing/SKILL.md`. The game tester defaults to autonomous
+exploration, can execute explicit regression scenarios, follows sense → act →
+verify, and returns reproducible findings. The callable remote browser/MCP or
+plugin runtime is intentionally external to this repository.
 
 ## Authority
 
