@@ -2,7 +2,7 @@ import type { RuntimeErrorCode } from './contracts.js';
 
 export class RuntimeError extends Error {
   readonly code: RuntimeErrorCode;
-  readonly details?: Record<string, unknown>;
+  readonly details: Record<string, unknown> | undefined;
 
   constructor(code: RuntimeErrorCode, message: string, details?: Record<string, unknown>) {
     super(message);
