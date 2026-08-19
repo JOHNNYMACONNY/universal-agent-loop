@@ -40,6 +40,9 @@ export class FakeBrowserAdapter implements BrowserAdapter {
   readonly #sessions = new Map<string, FakeSession>();
   readonly #ambiguous = new Set<string>();
   readonly #state: unknown;
+  startCalls = 0;
+  inputCalls = 0;
+  releaseCalls = 0;
 
   constructor(options: Options = {}) {
     for (const id of options.ambiguousBatchIds ?? []) this.#ambiguous.add(id);
@@ -66,6 +69,7 @@ export class FakeBrowserAdapter implements BrowserAdapter {
   }
 
   async start(input: BrowserStartInput): Promise<BrowserStartResult> {
+    this.startCalls += 1;
     const sandboxId = `fake_${randomUUID()}`;
     const entry: FakeSession = { alive: true, url: input.targetUrl, heldKeys: new Set(), heldPointerButtons: new Set() };
     this.#sessions.set(sandboxId, entry);
@@ -80,6 +84,7 @@ export class FakeBrowserAdapter implements BrowserAdapter {
   async observe(session: BrowserSessionRef): Promise<BrowserObservation> { return this.#observation(this.#entry(session)); }
 
   async input(session: BrowserSessionRef, batch: AcceptedActionBatch): Promise<BrowserBatchResult> {
+    this.inputCalls += 1;
     const entry = this.#entry(session);
     for (const action of batch.actions) this.#apply(entry, action);
     return {
@@ -98,7 +103,7 @@ export class FakeBrowserAdapter implements BrowserAdapter {
 
   async readState(session: BrowserSessionRef, path?: string): Promise<unknown> { this.#entry(session); return pointer(this.#state, path); }
   async reset(session: BrowserSessionRef): Promise<BrowserObservation> { const entry = this.#entry(session); entry.heldKeys.clear(); entry.heldPointerButtons.clear(); return this.#observation(entry); }
-  async releaseHeldInput(session: BrowserSessionRef): Promise<void> { const entry = this.#entry(session); entry.heldKeys.clear(); entry.heldPointerButtons.clear(); }
+  async releaseHeldInput(session: BrowserSessionRef): Promise<void> { this.releaseCalls += 1; const entry = this.#entry(session); entry.heldKeys.clear(); entry.heldPointerButtons.clear(); }
   async end(session: BrowserSessionRef): Promise<void> { const entry = this.#sessions.get(session.sandboxId); if (entry) entry.alive = false; }
   loseSession(session: BrowserSessionRef): void { const entry = this.#sessions.get(session.sandboxId); if (entry) entry.alive = false; }
 }

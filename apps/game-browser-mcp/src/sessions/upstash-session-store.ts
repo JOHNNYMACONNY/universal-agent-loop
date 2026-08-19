@@ -69,6 +69,16 @@ redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
 return 1
 `;
 
+const UPDATE_HELD_LUA = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return 0 end
+local session = cjson.decode(raw)
+session.held_keys = cjson.decode(ARGV[1])
+session.held_pointer_buttons = cjson.decode(ARGV[2])
+redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
+return 1
+`;
+
 function decodeResult<T>(value: unknown): T {
   if (typeof value === 'string') return JSON.parse(value) as T;
   return value as T;
@@ -116,6 +126,11 @@ export class UpstashSessionStore implements SessionStore {
       [input.batchId, JSON.stringify(input.result)]);
     throwIfError(value);
     return decodeResult<CompleteBatchResult>(value);
+  }
+
+  async updateHeldInput(sessionId: string, heldKeys: string[], heldPointerButtons: string[]): Promise<void> {
+    const result = await this.#redis.eval(UPDATE_HELD_LUA, [this.#sessionKey(sessionId)], [JSON.stringify(heldKeys), JSON.stringify(heldPointerButtons)]);
+    if (Number(result) === 0) throw new RuntimeError('SESSION_NOT_FOUND', 'session not found');
   }
 
   async markRecoveryRequired(sessionId: string, reason: string): Promise<void> {
