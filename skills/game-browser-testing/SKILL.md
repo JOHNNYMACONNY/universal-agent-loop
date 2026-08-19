@@ -12,7 +12,7 @@ Bounded browser-QA companion skill. It owns one browser-testing session, returns
 - V1 targets public/deployed browser games. Do not claim localhost, private LAN, private Mac, or local-build access unless the active harness actually exposes it.
 - Autonomous exploratory QA is the default. Explicit scenarios or acceptance criteria add priority and constraints; use strict scenario-only execution only when the caller explicitly requests it.
 - Discover actual browser capabilities before testing. Useful capabilities include open/navigate URL, screenshot/visual frame, keyboard, mouse/pointer, DOM/accessibility snapshot, JavaScript evaluation, console/runtime errors, failed request/network inspection, and reset/reload/close.
-- Never invent an unavailable capability or fabricate browser evidence. If required coverage depends on a missing capability, return a concrete capability blocker/limitation.
+- Never invent an unavailable capability or fabricate browser evidence. If required coverage depends on a missing capability, return `BLOCKED_CAPABILITY` with the missing capability and affected coverage.
 - This skill is evidence-producing only. It does not edit repositories, merge, deploy, publish, buy anything, change billing, enter credentials without explicit authority, or perform destructive external actions.
 
 ## Session loop
@@ -29,7 +29,7 @@ Infer likely controls from visible instructions, common conventions, accessibili
 
 Prioritize startup/loading, primary movement/control loop, obvious interactions, state transitions, collision/boundary behavior, repeated actions likely to expose state bugs, correlated console/network failures, and severe visible performance regressions.
 
-Avoid endless random input. Maximize information, not input volume; abandon low-yield exploration and move to another goal.
+Avoid endless random input. Maximize information, not input volume; abandon low-yield exploration and move to another goal. Stop the session when the highest-value reachable goals have been exercised, a required capability blocks further meaningful progress, or the caller/harness budget is exhausted.
 
 ### 3. Sense → Act → Verify
 
@@ -49,7 +49,7 @@ Use keyboard and mouse/pointer input as appropriate. Re-sense after meaningful s
 
 When explicit scenarios or acceptance criteria exist, execute them first or alongside autonomous goals. Explicit scenarios do not disable lightweight exploratory QA unless strict scenario-only behavior was requested.
 
-If a scenario cannot be completed, distinguish a product defect from a capability limitation and capture the strongest available evidence for that distinction.
+If scenarios can contaminate each other's state, reset/reload to a known baseline between them when the capability exists. If a scenario cannot be completed, distinguish a product defect from a capability limitation and capture the strongest available evidence for that distinction.
 
 ### 5. Optional instrumentation
 
@@ -65,9 +65,10 @@ When a defect is suspected, try to reproduce it with the smallest practical inpu
 
 ## Findings contract
 
-For each material finding, return:
+For each finding, return:
 
 - `severity`: blocker | high | medium | low
+- `material`: true | false
 - `title`: concise defect summary
 - `reproduction`: minimal steps/input sequence
 - `expected`: requirement/design expectation when inferable
@@ -75,13 +76,19 @@ For each material finding, return:
 - `evidence`: screenshot/frame, runtime/console/network signal, instrumentation value, or reproducible state transition
 - `confidence`: confirmed | likely | uncertain
 
+A finding is material when it affects acceptance criteria, correctness, gameplay progression, stability/performance, security/privacy, or materially degrades the user-visible experience. Cosmetic preference or polish that does not affect those concerns is non-material and must not create a repair loop by itself.
+
 State evidence/coverage limitations explicitly.
 
-## Session completion
+## Session result
 
-Return session PASS only when the reachable relevant surface loaded sufficiently, required scenarios were exercised when provided, autonomous exploration covered the highest-value reachable interactions, and there are no material findings from the session.
+Return one top-level `status`: PASS | FINDINGS | BLOCKED_CAPABILITY.
 
-A confirmed or likely material finding returns FINDINGS, not PASS, even when it has been successfully reproduced. Uncertain observations remain explicitly uncertain and are reported with their evidence/coverage limitations.
+- `PASS`: required scenarios were exercised when provided, autonomous exploration covered the highest-value reachable interactions, and there are no `material: true` findings.
+- `FINDINGS`: at least one confirmed or likely `material: true` finding exists. A successfully reproduced material defect is still FINDINGS, not PASS.
+- `BLOCKED_CAPABILITY`: a missing required browser capability prevents meaningful required coverage; name the capability and affected goals/scenarios.
+
+Uncertain observations remain explicitly uncertain and are reported with their evidence/coverage limitations. Non-material findings may accompany PASS but must be clearly marked `material: false`.
 
 Session PASS is evidence for the caller, not outer-loop completion or lifecycle completion.
 
