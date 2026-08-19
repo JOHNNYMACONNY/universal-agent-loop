@@ -1,0 +1,84 @@
+import { createServer } from 'node:http';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { createProductionRuntimeApp, PRODUCTION_ENVIRONMENT_NAMES } from '../src/server.js';
+
+const SHA = 'a'.repeat(40);
+const ENV = {
+  UPSTASH_REDIS_REST_URL: 'https://redis.example.com',
+  UPSTASH_REDIS_REST_TOKEN: 'redis-token',
+  VERCEL_API_TOKEN: 'vercel-token',
+  TARGET_PROJECT_ID: 'project-1',
+  TARGET_REPOSITORY_OWNER: 'owner',
+  TARGET_REPOSITORY_NAME: 'repo',
+  TARGET_ENTRY_PATH: '/fixture/',
+  APPROVED_DEPLOYMENT_HOST_PATTERNS: '*.vercel.app',
+  APPROVED_DEPENDENCY_HOSTS: '',
+  APPROVED_REDIRECT_HOSTS: '',
+  AGENT_BROWSER_SNAPSHOT_ID: 'snap_1',
+  REGISTRATION_CONTROL_TOKEN: 'registration-control-secret-123',
+  OWNER_BINDING_SECRET: 'owner-binding-secret-with-adequate-length',
+  PRINCIPAL_AUDIENCE: 'game-browser-mcp',
+  RUNTIME_ALLOWED_HOSTS: '127.0.0.1,localhost',
+};
+
+test('production composition declares every required secret/config category', () => {
+  for (const name of [
+    'UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN', 'VERCEL_API_TOKEN',
+    'TARGET_PROJECT_ID', 'TARGET_REPOSITORY_OWNER', 'TARGET_REPOSITORY_NAME', 'TARGET_ENTRY_PATH',
+    'APPROVED_DEPLOYMENT_HOST_PATTERNS', 'AGENT_BROWSER_SNAPSHOT_ID',
+    'REGISTRATION_CONTROL_TOKEN', 'OWNER_BINDING_SECRET', 'PRINCIPAL_AUDIENCE',
+  ]) assert.ok(PRODUCTION_ENVIRONMENT_NAMES.includes(name), `${name} missing from environment contract`);
+});
+
+test('production composition fails closed when required environment is missing', () => {
+  assert.throws(() => createProductionRuntimeApp({}), /UPSTASH_REDIS_REST_URL|configuration/i);
+});
+
+test('production app exposes health + fixture but protects internal registration without control token', async () => {
+  const app = createProductionRuntimeApp(ENV);
+  const http = createServer(app);
+  await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
+  const address = http.address();
+  if (!address || typeof address === 'string') throw new Error('missing test address');
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    const health = await fetch(`${base}/healthz`);
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { ok: true });
+    const fixture = await fetch(`${base}/fixture/`);
+    assert.equal(fixture.status, 200);
+    assert.match(await fixture.text(), /Remote QA Canvas Fixture/);
+    const registration = await fetch(`${base}/internal/registrations`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ deploymentId: 'dpl_1', expectedCommitSha: SHA }),
+    });
+    assert.equal(registration.status, 401);
+  } finally {
+    await new Promise<void>((resolve, reject) => http.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test('production MCP resolves bearer identity per HTTP request and fails closed when absent', async () => {
+  const app = createProductionRuntimeApp(ENV);
+  const http = createServer(app);
+  await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
+  const address = http.address();
+  if (!address || typeof address === 'string') throw new Error('missing test address');
+  const client = new Client({ name: 'production-auth-test', version: '1.0.0' });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`)));
+    const result = await client.callTool({
+      name: 'game_session_start',
+      arguments: { target_registration_id: 'reg_missing', expected_commit_sha: SHA },
+    });
+    assert.equal(result.isError, true);
+    const text = result.content?.[0]?.type === 'text' ? result.content[0].text : '';
+    assert.match(text, /AUTH_CONTEXT_UNAVAILABLE/);
+  } finally {
+    await client.close();
+    await new Promise<void>((resolve, reject) => http.close((error) => error ? reject(error) : resolve()));
+  }
+});
