@@ -58,11 +58,14 @@ export class RegistrationService {
       projectId: this.#trust.projectId,
     });
 
-    const deploymentUrl = new URL(verified.deploymentUrl);
-    const host = deploymentUrl.hostname.toLowerCase();
+    const providerUrl = new URL(verified.deploymentUrl);
+    const host = providerUrl.hostname.toLowerCase();
     if (!this.#trust.approvedDeploymentHostPatterns.some((pattern) => hostMatchesPattern(host, pattern))) {
       throw new RuntimeError('TARGET_BLOCKED', 'verified deployment host is outside project trust policy');
     }
+    const targetUrl = this.#trust.targetEntryPath === '/'
+      ? providerUrl.origin
+      : new URL(this.#trust.targetEntryPath, `${providerUrl.origin}/`).toString();
 
     const created = this.#now();
     const registration = TargetRegistrationSchema.parse({
@@ -71,8 +74,8 @@ export class RegistrationService {
       repository,
       expected_commit_sha: verified.commitSha,
       deployment_id: verified.deploymentId,
-      deployment_url: deploymentUrl.toString().replace(/\/$/, ''),
-      deployment_origin: deploymentUrl.origin,
+      deployment_url: targetUrl,
+      deployment_origin: providerUrl.origin,
       allowed_hosts: [...new Set([
         host,
         ...this.#trust.approvedDependencyHosts,
