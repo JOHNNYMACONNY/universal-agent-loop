@@ -25,12 +25,13 @@ const ENV = {
 };
 
 test('production composition declares every required secret/config category', () => {
+  const declared = new Set<string>(PRODUCTION_ENVIRONMENT_NAMES);
   for (const name of [
     'UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN', 'VERCEL_API_TOKEN',
     'TARGET_PROJECT_ID', 'TARGET_REPOSITORY_OWNER', 'TARGET_REPOSITORY_NAME', 'TARGET_ENTRY_PATH',
     'APPROVED_DEPLOYMENT_HOST_PATTERNS', 'AGENT_BROWSER_SNAPSHOT_ID',
     'REGISTRATION_CONTROL_TOKEN', 'OWNER_BINDING_SECRET', 'PRINCIPAL_AUDIENCE',
-  ]) assert.ok(PRODUCTION_ENVIRONMENT_NAMES.includes(name), `${name} missing from environment contract`);
+  ]) assert.ok(declared.has(name), `${name} missing from environment contract`);
 });
 
 test('production composition fails closed when required environment is missing', () => {
