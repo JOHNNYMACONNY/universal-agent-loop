@@ -1,7 +1,7 @@
 # Game Browser Testing Skill — Design
 
 Date: 2026-08-19
-Status: accepted implementation design
+Status: implemented and review-reconciled
 
 ## Goal
 
@@ -13,7 +13,7 @@ The tester should behave primarily as an autonomous exploratory QA agent, with s
 
 V1 targets public/deployed browser games only. It does not require access to localhost, private LANs, a user's Mac, credentials, or private browser profiles.
 
-This repository will contain the skill contract, conformance tests, and integration routing. The actual remote browser/MCP/plugin runtime remains a separate deployable component because UAL intentionally has no runtime dependencies and should not own browser infrastructure.
+This repository contains the skill contract, conformance tests, and integration routing. The actual remote browser/MCP/plugin runtime remains a separate deployable component because UAL intentionally has no runtime dependencies and should not own browser infrastructure.
 
 ## Architecture
 
@@ -26,7 +26,7 @@ Autonomous Dev Loop
        -> game-browser-testing (when interactive game/browser verification is relevant)
   -> REVIEW
        -> game-browser-testing evidence may inform review
-  -> PASS | REPAIR
+  -> PASS | REPAIR | verification blocker
 ```
 
 The game tester owns only one browser-testing session. It returns evidence and findings to the caller. It never declares the outer implementation complete, merges code, deploys, or changes repository state by itself.
@@ -46,9 +46,13 @@ Given a public game URL, the tester should:
 7. Reproduce suspected defects before reporting them when practical.
 8. Return concise findings with supporting evidence and confidence.
 
+Stop when the highest-value reachable goals have been exercised, a required capability blocks meaningful progress, or the caller/harness budget is exhausted.
+
 ### Scenario-driven mode — optional
 
 When the caller provides explicit scenarios or acceptance criteria, execute those scenarios in addition to autonomous exploration. Explicit scenarios constrain priority but do not disable lightweight exploratory checks unless the caller requests strict scenario-only execution.
+
+When scenarios can contaminate each other's state, reset/reload to a known baseline between them when that capability exists.
 
 ## Browser Capability Contract
 
@@ -66,7 +70,7 @@ Useful capabilities include:
 - failed request/network inspection;
 - session reset/reload/close.
 
-The skill must not invent unavailable operations. If the requested test requires a missing capability, return a concrete capability blocker rather than claiming coverage.
+The skill must not invent unavailable operations. If required coverage depends on a missing capability, return `BLOCKED_CAPABILITY` naming the missing capability and affected coverage rather than claiming coverage.
 
 ## Sense → Act → Verify
 
@@ -130,29 +134,34 @@ Avoid endless random input. Stop a line of exploration when it is clearly low-yi
 
 ## Findings Contract
 
-Each material finding should include:
+Each finding includes:
 
-- severity: blocker | high | medium | low;
+- `severity`: blocker | high | medium | low;
+- `material`: true | false;
 - concise title;
 - reproduction steps/input sequence;
 - expected behavior when inferable from requirements or visible design;
 - observed behavior;
 - evidence: screenshot/frame reference, console/runtime/network signal, instrumentation value, or reproducible state transition;
-- confidence: confirmed | likely | uncertain.
+- `confidence`: confirmed | likely | uncertain.
+
+Materiality is distinct from severity. A finding is material when it affects acceptance criteria, correctness, gameplay progression, stability/performance, security/privacy, or materially degrades the user-visible experience. Cosmetic preference/polish that does not affect those concerns is non-material and cannot force a repair loop by itself.
 
 Do not report speculative visual oddities as confirmed defects without reproduction or corroborating evidence.
 
-## Completion Contract
+## Session Result Contract
 
-A session can return PASS only when:
+Every session returns one top-level `status`:
 
-- the game loaded sufficiently to exercise the relevant surface;
-- required scenarios/acceptance criteria were exercised when provided;
-- autonomous exploration covered the highest-value reachable interactions;
-- no known material findings remain unreproduced or unresolved within the session;
-- evidence limitations are stated explicitly.
+```text
+PASS | FINDINGS | BLOCKED_CAPABILITY
+```
 
-A browser session PASS is evidence for the caller. It is not outer-loop completion.
+- `PASS`: required scenarios were exercised when provided, autonomous exploration covered the highest-value reachable interactions, and there are no `material: true` findings. Non-material findings may accompany PASS if clearly labeled.
+- `FINDINGS`: at least one confirmed or likely `material: true` finding exists. Reproducing a material defect strengthens the finding; it does not permit PASS.
+- `BLOCKED_CAPABILITY`: a missing required browser capability prevents meaningful required coverage; the missing capability and affected goals/scenarios are named.
+
+Evidence/coverage limitations are stated explicitly. A browser session PASS is evidence for the caller. It is not outer-loop completion.
 
 ## Integration with `autonomous-dev-loop`
 
@@ -162,7 +171,15 @@ The autonomous dev loop should route to `game-browser-testing` when all are true
 - the change or acceptance criteria are materially interactive/visual/gameplay-related;
 - browser control is available.
 
-The outer loop remains responsible for repository changes and authority. Any material game-browser finding routes the outer loop to REPAIR, followed by fresh VERIFY and REVIEW. A code change stales previous game-browser evidence just like other runtime evidence.
+If the skill is not natively installed but exists in the project repository, the autonomous loop should load the repository-local `skills/game-browser-testing/SKILL.md` rather than incorrectly looking for it in the Matt Pocock engineering-skills repository.
+
+The outer loop interprets game-QA status deterministically:
+
+- PASS -> runtime evidence only; continue normal VERIFY/REVIEW gates;
+- FINDINGS with material findings -> REPAIR, followed by fresh VERIFY and REVIEW;
+- BLOCKED_CAPABILITY -> verification blocker/limitation; never treat as PASS.
+
+A code change stales previous game-browser evidence just like other runtime evidence.
 
 The outer loop must not block non-game work merely because this optional skill is unavailable. If interactive game verification is required and no browser-control capability exists, it should report the specific verification limitation/blocker.
 
@@ -182,7 +199,7 @@ The tester must not:
 
 ## Files
 
-Initial implementation scope:
+Implementation scope:
 
 ```text
 skills/game-browser-testing/SKILL.md
