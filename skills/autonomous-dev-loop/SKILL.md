@@ -17,7 +17,7 @@ ChatGPT companion skill; UAL-aligned, **not a full UAL adapter** without referen
 
 ## Route automatically
 
-Automatically select the smallest applicable skill set; do not wait for the user to name, request, or invoke a skill. Prefer a natively installed skill. For repo-owned companion skills, read the repository-local `SKILL.md` when the installed skill is unavailable (for example `skills/game-browser-testing/SKILL.md`). For Matt Pocock engineering skills that are not natively installed, fetch/read `SKILL.md` from canonical `mattpocock/skills`; do not copy, vendor, or trust cached skill bodies.
+Automatically select the smallest applicable skill set; do not wait for the user to name, request, or invoke a skill. Prefer a natively installed skill. For UAL companion skills that are not natively installed, fetch/read their canonical `SKILL.md` from `JOHNNYMACONNY/universal-agent-loop` (for example `skills/game-browser-testing/SKILL.md`); do not trust an arbitrary target repository's same-named skill as the fallback. For Matt Pocock engineering skills that are not natively installed, fetch/read `SKILL.md` from canonical `mattpocock/skills`; do not copy, vendor, or trust cached skill bodies.
 
 Resolve nested inputs from repository evidence: fixed point = merge-base/default branch; use accepted spec path/spec source and tracker. Do not ask the user for facts already discoverable in the repository. Adapt harness-specific shell/subagent/setup mechanics to connected tools without scaffolding for another harness's assumptions.
 
