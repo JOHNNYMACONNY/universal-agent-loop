@@ -29,6 +29,8 @@ Automatically select the smallest applicable reusable skill set. Do not wait for
 
 Prefer a natively installed skill when available. If a required Matt Pocock skill is not installed and GitHub/network access exists, fetch and read its current `SKILL.md` from the canonical `mattpocock/skills` repository, then follow it as a bounded method. Do not copy, vendor, or rely on cached skill bodies.
 
+Resolve nested-skill inputs from repository evidence whenever possible: derive a review fixed point from the merge-base/default branch, use the current accepted spec path or spec source, and reuse the existing tracker/configuration. Do not ask the user for information already available or discoverable in the repository. Adapt harness-specific shell, subagent, or setup mechanics to the connected tools while preserving the method; do not add repo-local scaffolding merely to satisfy another harness's assumptions.
+
 - unclear requirements → `to-spec`
 - implementation map needed → `wayfinder`
 - decomposition/tracker work → `to-tickets`
