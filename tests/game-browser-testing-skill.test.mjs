@@ -79,24 +79,28 @@ test('optional game instrumentation strengthens but does not replace black-box v
   assert.match(markdown, /destructive.*explicit.*authority|explicit.*authority.*destructive/i);
 });
 
-test('findings require reproducible structured evidence and confidence', async () => {
+test('findings expose materiality separately from severity', async () => {
   const markdown = await load(gameSkillPath);
 
-  for (const field of ['severity', 'reproduction', 'expected', 'observed', 'evidence', 'confidence']) {
+  for (const field of ['severity', 'material', 'reproduction', 'expected', 'observed', 'evidence', 'confidence']) {
     assert.match(markdown, new RegExp(`\\b${field}\\b`, 'i'), `missing finding field: ${field}`);
   }
   assert.match(markdown, /blocker.*high.*medium.*low|blocker \| high \| medium \| low/i);
   assert.match(markdown, /confirmed.*likely.*uncertain|confirmed \| likely \| uncertain/i);
+  assert.match(markdown, /material[^\n]*(?:acceptance|correctness|progression|stability|performance|security|privacy|user-visible)/i);
+  assert.match(markdown, /(?:cosmetic|preference)[^\n]*(?:not material|non-material)|(?:not material|non-material)[^\n]*(?:cosmetic|preference)/i);
   assert.match(markdown, /(?:reproduce|reproduction).*suspected|suspected.*reproduce/i);
   assert.match(markdown, /speculative|uncertain/i);
 });
 
-test('session PASS requires zero material findings and remains evidence for caller only', async () => {
+test('session result has deterministic PASS FINDINGS and capability-blocked outcomes', async () => {
   const markdown = await load(gameSkillPath);
 
-  assert.match(markdown, /PASS/i);
+  assert.match(markdown, /status/i);
+  assert.match(markdown, /PASS.*FINDINGS.*BLOCKED_CAPABILITY|PASS \| FINDINGS \| BLOCKED_CAPABILITY/i);
   assert.match(markdown, /(?:PASS|pass)[^\n]*(?:no|zero)[^\n]*material finding|no material finding[^\n]*PASS/i);
-  assert.match(markdown, /(?:material finding|confirmed defect)[^\n]*(?:FINDINGS|FAIL|not PASS)|(?:FINDINGS|FAIL)[^\n]*material finding/i);
+  assert.match(markdown, /(?:material finding|confirmed defect)[^\n]*(?:FINDINGS|not PASS)|FINDINGS[^\n]*material finding/i);
+  assert.match(markdown, /BLOCKED_CAPABILITY[^\n]*(?:missing|required|capability)|(?:missing|required).*capability[^\n]*BLOCKED_CAPABILITY/i);
   assert.match(markdown, /limitations|coverage limitation|evidence limitation/i);
   assert.match(markdown, /(?:PASS|session).*(?:evidence for|returns.*caller)|evidence.*caller/i);
   assert.match(markdown, /(?:not|never).*outer.*completion|not.*lifecycle completion/i);
