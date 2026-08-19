@@ -91,10 +91,12 @@ test('findings require reproducible structured evidence and confidence', async (
   assert.match(markdown, /speculative|uncertain/i);
 });
 
-test('session completion is evidence for caller rather than outer-loop completion', async () => {
+test('session PASS requires zero material findings and remains evidence for caller only', async () => {
   const markdown = await load(gameSkillPath);
 
   assert.match(markdown, /PASS/i);
+  assert.match(markdown, /(?:PASS|pass)[^\n]*(?:no|zero)[^\n]*material finding|no material finding[^\n]*PASS/i);
+  assert.match(markdown, /(?:material finding|confirmed defect)[^\n]*(?:FINDINGS|FAIL|not PASS)|(?:FINDINGS|FAIL)[^\n]*material finding/i);
   assert.match(markdown, /limitations|coverage limitation|evidence limitation/i);
   assert.match(markdown, /(?:PASS|session).*(?:evidence for|returns.*caller)|evidence.*caller/i);
   assert.match(markdown, /(?:not|never).*outer.*completion|not.*lifecycle completion/i);
@@ -122,14 +124,15 @@ test('skill discovers actual browser capabilities and degrades honestly', async 
   assert.match(markdown, /(?:do not|never).*invent|missing capability|capability blocker/i);
 });
 
-test('autonomous dev loop routes game verification automatically and repairs material findings', async () => {
+test('autonomous dev loop loads repo-owned game skill and repairs material findings', async () => {
   const markdown = await load(autonomousSkillPath);
 
   assert.match(markdown, /game-browser-testing/i);
+  assert.match(markdown, /(?:repo|repository)[- ]local.*(?:skill|SKILL\.md)|skills\/game-browser-testing\/SKILL\.md/i);
   assert.match(markdown, /(?:interactive|game).*browser.*(?:verify|verification)|browser.*game.*verification/i);
   assert.match(markdown, /do not wait .*user.*(?:name|request|invoke).*skill/i);
   assert.match(markdown, /material.*game-browser.*finding[\s\S]{0,300}REPAIR/i);
   assert.match(markdown, /REPAIR[\s\S]{0,300}VERIFY[\s\S]{0,300}REVIEW/i);
-  assert.match(markdown, /(?:change|edit|commit)[^\n]*(?:stale|invalidates)[^\n]*(?:browser|runtime|evidence)/i);
+  assert.match(markdown, /(?:change|edit|commit)[^\n]*(?:(?:browser|runtime|evidence)[^\n]*(?:stale|invalidates)|(?:stale|invalidates)[^\n]*(?:browser|runtime|evidence))/i);
   assert.match(markdown, /browser-control.*(?:missing|unavailable)|no browser-control/i);
 });
