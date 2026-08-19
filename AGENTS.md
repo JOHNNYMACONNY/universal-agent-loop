@@ -1,7 +1,7 @@
 # AGENTS.md — universal-agent-loop
 
 Canonical harness-neutral agent orchestration protocol (UAL) + reference
-engine + harness adapters.
+engine + harness adapters + capability-honest companion skills.
 
 ## Layout
 
@@ -12,7 +12,11 @@ engine + harness adapters.
 - `bin/agent-loop.js` — CLI: capabilities, scan, plan, state, authority,
   handoff.
 - `adapters/opencode/` — OpenCode global skill + install.sh.
-- `tests/` — node:test fixture suites (required cases + adversarial).
+- `skills/autonomous-dev-loop/` — ChatGPT companion control-plane skill for
+  connected GitHub/CI/runtime execution without a separate coding agent.
+  It is UAL-aligned but not a full adapter when the UAL engine cannot run.
+- `tests/` — node:test fixture suites (required cases + adversarial + skill
+  conformance).
 
 ## Commands
 
@@ -25,5 +29,8 @@ engine + harness adapters.
 - No runtime dependencies. No timestamps-based classification. No repo
   mutation from engine code paths except explicit `state`/`handoff`
   writes into `.agent-loop/`.
-- Tests are hermetic: temp git repos, fake `gh` via `AGENT_LOOP_GH`.
+- `protocol/` remains canonical. Companion skills may reuse invariants but
+  must not fork lifecycle semantics or claim capabilities they do not have.
+- Tests are hermetic: temp git repos, fake `gh` via `AGENT_LOOP_GH`, plus
+  deterministic static checks for skill contracts.
 - No secrets anywhere. Use synthetic placeholders.
