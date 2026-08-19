@@ -86,6 +86,27 @@ Vercel Sandbox provides isolated cloud microVMs and supports headless Chromium p
 
 The coordinator should use Vercel's server-side identity/OIDC when deployed. Personal Vercel tokens are administrative/development credentials only and MUST NOT be required by the end-user execution loop.
 
+## Authority Boundary
+
+This runtime design does not weaken or replace canonical UAL authority rules.
+
+The browser runtime itself has no authority to:
+
+- modify GitHub;
+- create or update PRs;
+- merge;
+- deploy;
+- mutate production state;
+- publish externally;
+- read/use/create unrelated credentials;
+- change billing.
+
+The end-to-end autonomous acceptance path may include preview/test deployment only when the outer `autonomous-dev-loop` is operating under an already explicit `DEPLOY` grant scoped to that preview/test environment. Implementation/QA authority does **not** imply deployment authority.
+
+The `CHATGPT_LOOP_READY` acceptance demonstration MUST record the granted authority set used for the demonstration. Autonomy means the loop can continue without repeated manual intervention **within already granted authority**; it does not mean the loop may infer new authority.
+
+Provider service credentials, signed deployment-registration credentials, and Vercel OIDC are server-side infrastructure concerns. Their use must be pre-authorized/configured as part of the environment and must not be exposed to the model or end user during ordinary QA.
+
 ## Deployment Provenance and Commit-Bound Evidence
 
 A browser PASS against an unknown, mutable, stale, or unproven deployment MUST NOT count as VERIFY evidence.
@@ -101,7 +122,7 @@ interface TargetRegistration {
   deployment_id: string;          // immutable provider deployment identifier
   deployment_url: string;         // exact deployed preview URL
   deployment_origin: string;
-  allowed_hosts: string[];        // target + explicitly approved dependencies
+  allowed_hosts: string[];        // concrete target + explicitly approved dependencies
   created_at: string;
   expires_at: string;
   provenance_source: "provider_api" | "signed_provider_event" | "trusted_ci";
@@ -118,9 +139,11 @@ V1 uses a server-side registration/control path separate from the gameplay MCP t
 - a signed deployment-provider webhook/event; or
 - trusted CI using a narrowly scoped server credential to register the exact deployment it just produced.
 
-The registration workflow must be automatable after every deployment so a normal REPAIR -> redeploy -> VERIFY loop does not require a human to re-allowlist each commit.
+The registration workflow must be automatable after every authorized deployment so a normal REPAIR -> redeploy -> VERIFY loop does not require a human to re-allowlist each commit.
 
-A project may have a longer-lived trust configuration containing repository identity and approved host/dependency patterns. Each concrete deployment still receives a short-lived commit-bound `TargetRegistration`.
+A project may have a longer-lived trust configuration containing repository identity and approved host/dependency patterns. Each concrete deployment still receives a short-lived commit-bound `TargetRegistration` containing the exact deployment host and immutable provider deployment identity.
+
+An approved deployment host **pattern alone** is never sufficient provenance. The concrete host must also be verified as a deployment of the configured provider project/repository and exact commit. Broad wildcard patterns such as a provider-wide `*.example-host.com` cannot independently authorize an arbitrary deployment.
 
 ### Provenance verification at session start
 
@@ -131,7 +154,7 @@ A project may have a longer-lived trust configuration containing repository iden
 3. repository/project identity matches the trusted registration;
 4. `expected_commit_sha` exactly equals the registration's verified commit SHA;
 5. the exact deployment URL/immutable deployment identifier still maps to that commit according to the trusted provenance source;
-6. the target URL/origin and required dependency hosts are within the approved target policy.
+6. the concrete target URL/origin and required dependency hosts are within the approved target policy.
 
 Any mismatch returns a non-PASS error such as `PROVENANCE_MISMATCH` or `STALE_DEPLOYMENT` before gameplay begins.
 
@@ -202,11 +225,13 @@ interface ProjectTrustConfig {
 
 The target and dependency allowlist is server-side configuration or trusted signed registration data. A model-supplied URL alone cannot expand it.
 
+Deployment host patterns are discovery constraints only. A concrete deployment host must still pass provider-project/repository provenance verification before it becomes an allowed target.
+
 ### Required network policy
 
 Each sandbox session MUST receive a deny-by-default network policy where the provider supports it. Allowed egress is limited to:
 
-- the registered target/deployment host;
+- the exact registered target/deployment host;
 - explicitly approved game asset/API/CDN hosts from trusted project configuration;
 - explicitly approved project-owned redirect hosts;
 - infrastructure endpoints strictly required for the browser runtime itself.
@@ -280,6 +305,20 @@ SESSION_RECOVERY_REQUIRED
 ```
 
 A fresh session/reset may then be deliberately created by the caller. It must never be presented as continuation of the lost browser state.
+
+### Sandbox-side execution/input ledger
+
+The browser worker/sandbox MUST maintain its own minimal session execution ledger in addition to coordinator metadata so coordinator-process loss cannot erase the last known held-input/batch state before recovery.
+
+At minimum, the sandbox-side ledger tracks:
+
+- logical session identifier binding;
+- last accepted/completed `action_batch_id` state;
+- current held keys;
+- current held pointer buttons;
+- last locally observed action sequence.
+
+The coordinator compares its durable record with the sandbox-side ledger when reconnecting. Any irreconcilable or ambiguous state forces `SESSION_RECOVERY_REQUIRED`; it must not be guessed or silently advanced.
 
 ## Session Limits
 
@@ -421,6 +460,8 @@ Output includes:
 
 Before executing a batch, the runtime durably records the `action_batch_id`, expected sequence, and acceptance state. A retry of an already completed `action_batch_id` returns the recorded result and MUST NOT execute the actions again.
 
+The sandbox-side worker receives the same `action_batch_id` and refuses to re-execute a batch it has already recorded as complete. Coordinator-level and sandbox-level idempotency are defense in depth.
+
 A new batch is accepted only when `expected_action_seq` equals the current server sequence. This prevents stale/out-of-order actions from silently running.
 
 If the coordinator/browser worker fails in a window where it cannot prove whether a partially executed batch completed, the system MUST NOT retry the batch blindly. It marks the session `RECOVERY_REQUIRED`, releases held input state if the browser is reachable, and returns `ACTION_STATE_UNKNOWN` / `SESSION_RECOVERY_REQUIRED`. The caller must reset or start fresh before further gameplay actions.
@@ -429,7 +470,9 @@ The runtime maintains monotonic `action_seq` and `observation_seq` values. Evide
 
 ### Fail-safe input release
 
-The runtime tracks held keys and pointer buttons and MUST attempt to release all held input before further cleanup/recovery on:
+The runtime tracks held keys and pointer buttons in both coordinator/session metadata and the sandbox-side execution ledger.
+
+It MUST attempt to release all held input before further cleanup/recovery on:
 
 - timeout;
 - browser/driver error;
@@ -542,7 +585,9 @@ BROWSER_ERROR
 LIMIT_EXCEEDED
 ```
 
-Browser failures, stale deployments, provenance mismatches, confirmation requirements, and lost sessions MUST NOT be converted into successful observations.
+Browser failures, stale deployments, provenance mismatches, lost sessions, and other runtime blockers MUST NOT be converted into successful observations.
+
+`BLOCKED_PLATFORM_AUTONOMY` is an end-to-end ChatGPT/App readiness blocker rather than a normal MCP browser-session error because a server call cannot reliably know that ChatGPT requested a UI confirmation before invoking it.
 
 Evidence MUST identify:
 
@@ -651,6 +696,8 @@ This preserves current UAL principles:
 - verification/review evidence never expands publication/deployment/credential authority;
 - browser/runtime tools remain bounded subtasks and cannot terminate the outer lifecycle.
 
+Any deployment in this loop is performed by the outer orchestrator only when explicit `DEPLOY` authority for the relevant preview/test environment has already been granted. A browser PASS or review PASS cannot create that authority.
+
 The runtime itself has no authority to mutate GitHub, deploy, merge, publish, alter billing, or change production data.
 
 ## Real Game-Shaped Remote Acceptance Fixture
@@ -693,18 +740,20 @@ Use TDD during implementation. The service needs deterministic unit/contract tes
 Required test groups:
 
 1. **Deployment provenance** — trusted registration, exact SHA match, stale/mismatched deployment rejection, immutable deployment ID handling.
-2. **Target registration/SSRF** — project allowlist, private IPs, DNS resolution/rebinding, redirects, forbidden schemes, unregistered hosts.
-3. **Deny-by-default egress** — only registered target/dependency/runtime hosts permitted; unrelated third-party requests blocked.
+2. **Target registration/SSRF** — project allowlist, provider-project identity, private IPs, DNS resolution/rebinding, redirects, forbidden schemes, unregistered hosts.
+3. **Deny-by-default egress** — only registered concrete target/dependency/runtime hosts permitted; unrelated third-party requests blocked.
 4. **Stateless session lifecycle** — start on one coordinator instance, resume on another, expiry, browser-loss detection, end, cleanup, ownership isolation.
-5. **Input idempotency/sequencing** — duplicate `action_batch_id`, stale `expected_action_seq`, concurrent requests, action ledger, monotonic sequences.
-6. **Fail-safe input release** — timeout, browser error, reset, expiration, end, partial failure, recovery-required cases.
-7. **Action validation** — key allowlist, coordinates/deltas, waits, relative pointer bounds, action/session limits.
-8. **Instrumentation reader** — JSON-only read semantics, function/mutation rejection, size/depth bounds.
-9. **MCP schemas** — stable narrow tool names, required/optional inputs, machine-readable error results, no generic escape hatch.
-10. **Browser adapter** — command generation/parsing isolated behind one interface with fake adapter tests.
-11. **Remote game-shaped browser integration** — the acceptance fixture requirements above, across multiple calls and stateless coordinator instances.
-12. **Security regression** — no arbitrary shell, JS, CDP/Playwright passthrough, target registration bypass, credential path, or generic browsing.
-13. **Autonomy acceptance** — real ChatGPT/plugin invocation confirms ordinary gameplay calls do not require per-action human approval; otherwise `BLOCKED_PLATFORM_AUTONOMY`.
+5. **Coordinator/sandbox reconciliation** — sandbox-side ledger survives coordinator-instance loss; ambiguous state produces recovery-required rather than guessed continuation.
+6. **Input idempotency/sequencing** — duplicate `action_batch_id` at coordinator and sandbox layers, stale `expected_action_seq`, concurrent requests, action ledger, monotonic sequences.
+7. **Fail-safe input release** — timeout, browser error, reset, expiration, end, partial failure, recovery-required cases.
+8. **Action validation** — key allowlist, coordinates/deltas, waits, relative pointer bounds, action/session limits.
+9. **Instrumentation reader** — JSON-only read semantics, function/mutation rejection, size/depth bounds.
+10. **MCP schemas** — stable narrow tool names, required/optional inputs, machine-readable error results, no generic escape hatch.
+11. **Browser adapter** — command generation/parsing isolated behind one interface with fake adapter tests.
+12. **Remote game-shaped browser integration** — the acceptance fixture requirements above, across multiple calls and stateless coordinator instances.
+13. **Security regression** — no arbitrary shell, JS, CDP/Playwright passthrough, target registration bypass, credential path, or generic browsing.
+14. **Authority regression** — runtime cannot deploy/mutate GitHub; end-to-end deploy path fails closed without explicit outer-loop `DEPLOY` authority.
+15. **Autonomy acceptance** — real ChatGPT/plugin invocation confirms ordinary gameplay calls do not require per-action human approval; otherwise `BLOCKED_PLATFORM_AUTONOMY`.
 
 Provider-backed browser tests that consume cloud resources are separately gated from hermetic unit tests but are mandatory for the relevant completion gate.
 
@@ -723,7 +772,7 @@ Production setup should use:
 - rate limiting/abuse controls before directory submission;
 - production privacy/terms metadata required by the app submission flow.
 
-Creating the browser snapshot and initial project trust configuration are administrative deployment steps, not requirements for each QA session. Per-deployment commit registration must be automatable through provider/CI integration.
+Creating the browser snapshot and initial project trust configuration are administrative deployment steps, not requirements for each QA session. Per-deployment commit registration must be automatable through provider/CI integration after an already authorized deployment.
 
 ## Privacy and Retention
 
@@ -763,13 +812,13 @@ The runtime may claim `RUNTIME_COMPLETE` only when:
 
 ### `CHATGPT_LOOP_READY`
 
-The system may claim `CHATGPT_LOOP_READY` only after the real end-to-end path has been demonstrated from ChatGPT itself with the local computer uninvolved:
+The system may claim `CHATGPT_LOOP_READY` only after the real end-to-end path has been demonstrated from ChatGPT itself with the local computer uninvolved and with the required UAL authority grants recorded in advance:
 
 ```text
 ChatGPT
 -> GitHub implementation change
 -> remote CI/verification
--> exact commit-bound deployment
+-> authorized exact commit-bound preview deployment
 -> game-browser-testing policy
 -> remote MCP browser session
 -> confirmation-free autonomous gameplay interaction
@@ -777,6 +826,7 @@ ChatGPT
 -> intentional/material fixture defect produces FINDINGS
 -> outer loop routes to REPAIR
 -> new implementation commit
+-> authorized new deployment
 -> new exact deployment registration
 -> fresh browser verification
 -> fresh review
@@ -789,8 +839,9 @@ The acceptance demonstration MUST prove:
 - ordinary gameplay tool calls do not require manual per-action confirmations;
 - browser evidence corresponds to the exact implementation commit under verification;
 - a material browser finding actually causes REPAIR rather than being merely reported;
-- the repaired implementation produces a new deployment and stale prior browser evidence is not reused;
-- fresh VERIFY and fresh REVIEW occur after repair.
+- the repaired implementation produces a new authorized deployment and stale prior browser evidence is not reused;
+- fresh VERIFY and fresh REVIEW occur after repair;
+- `DEPLOY` authority was explicitly granted for the preview/test environment before autonomous deploy/redeploy actions occurred.
 
 If the ChatGPT/app surface forces per-action confirmation and it cannot be safely configured away, report `BLOCKED_PLATFORM_AUTONOMY` and do not claim `CHATGPT_LOOP_READY`.
 
