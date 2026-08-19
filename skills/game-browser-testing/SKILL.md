@@ -79,7 +79,9 @@ State evidence/coverage limitations explicitly.
 
 ## Session completion
 
-Return session PASS only when the reachable relevant surface loaded sufficiently, required scenarios were exercised when provided, autonomous exploration covered the highest-value reachable interactions, and no known material finding remains unreproduced inside the session.
+Return session PASS only when the reachable relevant surface loaded sufficiently, required scenarios were exercised when provided, autonomous exploration covered the highest-value reachable interactions, and there are no material findings from the session.
+
+A confirmed or likely material finding returns FINDINGS, not PASS, even when it has been successfully reproduced. Uncertain observations remain explicitly uncertain and are reported with their evidence/coverage limitations.
 
 Session PASS is evidence for the caller, not outer-loop completion or lifecycle completion.
 
