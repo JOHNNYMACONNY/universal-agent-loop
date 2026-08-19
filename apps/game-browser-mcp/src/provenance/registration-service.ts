@@ -63,9 +63,10 @@ export class RegistrationService {
     if (!this.#trust.approvedDeploymentHostPatterns.some((pattern) => hostMatchesPattern(host, pattern))) {
       throw new RuntimeError('TARGET_BLOCKED', 'verified deployment host is outside project trust policy');
     }
-    const targetUrl = this.#trust.targetEntryPath === '/'
+    const entryPath = this.#trust.targetEntryPath ?? '/';
+    const targetUrl = entryPath === '/'
       ? providerUrl.origin
-      : new URL(this.#trust.targetEntryPath, `${providerUrl.origin}/`).toString();
+      : new URL(entryPath, `${providerUrl.origin}/`).toString();
 
     const created = this.#now();
     const registration = TargetRegistrationSchema.parse({
