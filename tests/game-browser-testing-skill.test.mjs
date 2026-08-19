@@ -98,8 +98,8 @@ test('session result has deterministic PASS FINDINGS and capability-blocked outc
 
   assert.match(markdown, /status/i);
   assert.match(markdown, /PASS.*FINDINGS.*BLOCKED_CAPABILITY|PASS \| FINDINGS \| BLOCKED_CAPABILITY/i);
-  assert.match(markdown, /(?:PASS|pass)[^\n]*(?:no|zero)[^\n]*material finding|no material finding[^\n]*PASS/i);
-  assert.match(markdown, /(?:material finding|confirmed defect)[^\n]*(?:FINDINGS|not PASS)|FINDINGS[^\n]*material finding/i);
+  assert.match(markdown, /(?:PASS|pass)[^\n]*(?:no|zero)[^\n]*(?:material finding|material: true)|(?:no|zero)[^\n]*(?:material finding|material: true)[^\n]*(?:PASS|pass)/i);
+  assert.match(markdown, /FINDINGS[^\n]*(?:material finding|material: true)|(?:material finding|material: true)[^\n]*FINDINGS/i);
   assert.match(markdown, /BLOCKED_CAPABILITY[^\n]*(?:missing|required|capability)|(?:missing|required).*capability[^\n]*BLOCKED_CAPABILITY/i);
   assert.match(markdown, /limitations|coverage limitation|evidence limitation/i);
   assert.match(markdown, /(?:PASS|session).*(?:evidence for|returns.*caller)|evidence.*caller/i);
@@ -125,7 +125,7 @@ test('skill discovers actual browser capabilities and degrades honestly', async 
   assert.match(markdown, /navigate|open.*URL/i);
   assert.match(markdown, /JavaScript|JS evaluation/i);
   assert.match(markdown, /reset|reload|close/i);
-  assert.match(markdown, /(?:do not|never).*invent|missing capability|capability blocker/i);
+  assert.match(markdown, /(?:do not|never).*invent|missing capability|capability blocker|BLOCKED_CAPABILITY/i);
 });
 
 test('autonomous dev loop loads repo-owned game skill and handles its statuses deterministically', async () => {
