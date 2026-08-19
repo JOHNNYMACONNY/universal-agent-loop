@@ -128,14 +128,15 @@ test('skill discovers actual browser capabilities and degrades honestly', async 
   assert.match(markdown, /(?:do not|never).*invent|missing capability|capability blocker/i);
 });
 
-test('autonomous dev loop loads repo-owned game skill and repairs material findings', async () => {
+test('autonomous dev loop loads repo-owned game skill and handles its statuses deterministically', async () => {
   const markdown = await load(autonomousSkillPath);
 
   assert.match(markdown, /game-browser-testing/i);
   assert.match(markdown, /(?:repo|repository)[- ]local.*(?:skill|SKILL\.md)|skills\/game-browser-testing\/SKILL\.md/i);
   assert.match(markdown, /(?:interactive|game).*browser.*(?:verify|verification)|browser.*game.*verification/i);
   assert.match(markdown, /do not wait .*user.*(?:name|request|invoke).*skill/i);
-  assert.match(markdown, /material.*game-browser.*finding[\s\S]{0,300}REPAIR/i);
+  assert.match(markdown, /FINDINGS[^\n]*(?:material|REPAIR)|material[^\n]*FINDINGS[^\n]*REPAIR/i);
+  assert.match(markdown, /BLOCKED_CAPABILITY[^\n]*(?:blocker|limitation|BLOCKED)/i);
   assert.match(markdown, /REPAIR[\s\S]{0,300}VERIFY[\s\S]{0,300}REVIEW/i);
   assert.match(markdown, /(?:change|edit|commit)[^\n]*(?:(?:browser|runtime|evidence)[^\n]*(?:stale|invalidates)|(?:stale|invalidates)[^\n]*(?:browser|runtime|evidence))/i);
   assert.match(markdown, /browser-control.*(?:missing|unavailable)|no browser-control/i);
