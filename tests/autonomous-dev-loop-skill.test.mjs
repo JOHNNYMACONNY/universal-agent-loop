@@ -54,6 +54,23 @@ test('skill automatically routes reusable engineering skills without user prompt
   assert.match(markdown, /nested skills?.*(?:bounded|subtask)/i);
 });
 
+test('fresh ChatGPT sessions can load Matt skills without vendoring them', async () => {
+  const markdown = await loadSkill();
+
+  assert.match(markdown, /mattpocock\/skills/i);
+  assert.match(markdown, /(?:native|installed).*skill/i);
+  assert.match(markdown, /(?:fetch|read|load).*SKILL\.md/i);
+  assert.match(markdown, /(?:do not|never).*(?:copy|vendor|cached).*skill/i);
+});
+
+test('ChatGPT remains the implementation plane unless delegation is explicitly requested', async () => {
+  const markdown = await loadSkill();
+
+  assert.match(markdown, /ChatGPT.*(?:builder|implementation plane)/i);
+  assert.match(markdown, /(?:do not|must not).*delegat.*(?:Codex|OpenCode|Antigravity|separate coding agent)/i);
+  assert.match(markdown, /explicitly asks|explicit request/i);
+});
+
 test('builder verifier and reviewer are distinct and failures re-enter repair', async () => {
   const markdown = await loadSkill();
 
@@ -63,6 +80,8 @@ test('builder verifier and reviewer are distinct and failures re-enter repair', 
   assert.match(markdown, /REPAIR[\s\S]{0,500}VERIFY[\s\S]{0,500}REVIEW/i,
     'repair must return through verification and review');
   assert.match(markdown, /implementer.*(?:cannot|must not).*(?:waive|override|dismiss).*review/i);
+  assert.match(markdown, /(?:subagent.*unavailable|no subagents)[^\n]*(?:fresh|separate).*review/i,
+    'same-session fallback must still create a fresh reviewer pass');
 });
 
 test('completion requires fresh observed evidence rather than self-report', async () => {
@@ -86,10 +105,11 @@ test('skill degrades honestly when local execution capabilities are absent', asy
   assert.match(markdown, /BLOCKED|external blocker|missing required capability/i);
 });
 
-test('generic implementation authority never implies merge deploy or high-impact authority', async () => {
+test('generic implementation authority never implies publication or high-impact authority', async () => {
   const markdown = await loadSkill();
 
   assert.match(markdown, /working branch|non-default branch/i);
+  assert.match(markdown, /(?:do not|must not).*(?:open|create|update).*PR.*(?:explicit|authority|authorization)/i);
   assert.match(markdown, /(?:do not|must not).*merge.*(?:explicit|authority|authorization)/i);
   assert.match(markdown, /(?:do not|must not).*deploy.*(?:explicit|authority|authorization)/i);
   assert.match(markdown, /secret|credential/i);
