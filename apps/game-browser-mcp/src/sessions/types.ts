@@ -2,6 +2,8 @@ export interface BeginBatchInput {
   sessionId: string;
   batchId: string;
   expectedActionSeq: number;
+  actionCount?: number;
+  maxActionsPerSession?: number;
 }
 
 export type BeginBatchResult =

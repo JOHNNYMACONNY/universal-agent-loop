@@ -25,6 +25,11 @@ if session.lifecycle ~= 'ACTIVE' then return cjson.encode({error='SESSION_RECOVE
 if session.pending_batch_id ~= nil then return cjson.encode({error='SESSION_RECOVERY_REQUIRED', reason='another batch pending'}) end
 local expected = tonumber(ARGV[1])
 if tonumber(session.action_seq) ~= expected then return cjson.encode({error='ACTION_REJECTED', reason='expected action sequence mismatch'}) end
+local actionCount = tonumber(ARGV[3]) or 1
+local maxActions = tonumber(ARGV[4]) or 9007199254740991
+local total = tonumber(session.total_action_count or 0)
+if actionCount <= 0 or (total + actionCount) > maxActions then return cjson.encode({error='LIMIT_EXCEEDED', reason='session action budget exceeded'}) end
+session.total_action_count = total + actionCount
 session.pending_batch_id = ARGV[2]
 redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
 local ttl = redis.call('PTTL', KEYS[1])
@@ -79,6 +84,33 @@ redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
 return 1
 `;
 
+const TOUCH_LUA = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return cjson.encode({error='SESSION_NOT_FOUND'}) end
+local session = cjson.decode(raw)
+local nowMs = tonumber(ARGV[1])
+local maxIdle = tonumber(ARGV[2])
+local absoluteMs = tonumber(ARGV[3])
+local idleMs = math.min(absoluteMs, nowMs + maxIdle)
+session.last_seen_at = ARGV[4]
+session.idle_expires_at = ARGV[5]
+redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
+return cjson.encode(session)
+`;
+
+const RESET_RECOVERY_LUA = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return 0 end
+local session = cjson.decode(raw)
+session.lifecycle = 'ACTIVE'
+session.pending_batch_id = nil
+session.recovery_reason = nil
+session.held_keys = {}
+session.held_pointer_buttons = {}
+redis.call('SET', KEYS[1], cjson.encode(session), 'KEEPTTL')
+return 1
+`;
+
 function decodeResult<T>(value: unknown): T {
   if (typeof value === 'string') return JSON.parse(value) as T;
   return value as T;
@@ -115,7 +147,7 @@ export class UpstashSessionStore implements SessionStore {
   async beginBatch(input: BeginBatchInput): Promise<BeginBatchResult> {
     const value = await this.#redis.eval(BEGIN_BATCH_LUA,
       [this.#sessionKey(input.sessionId), this.#batchKey(input.sessionId, input.batchId)],
-      [input.expectedActionSeq, input.batchId]);
+      [input.expectedActionSeq, input.batchId, input.actionCount ?? 1, input.maxActionsPerSession ?? Number.MAX_SAFE_INTEGER]);
     throwIfError(value);
     return decodeResult<BeginBatchResult>(value);
   }
@@ -130,6 +162,23 @@ export class UpstashSessionStore implements SessionStore {
 
   async updateHeldInput(sessionId: string, heldKeys: string[], heldPointerButtons: string[]): Promise<void> {
     const result = await this.#redis.eval(UPDATE_HELD_LUA, [this.#sessionKey(sessionId)], [JSON.stringify(heldKeys), JSON.stringify(heldPointerButtons)]);
+    if (Number(result) === 0) throw new RuntimeError('SESSION_NOT_FOUND', 'session not found');
+  }
+
+  async touch(sessionId: string, at: Date, maxIdleMs: number): Promise<SessionRecord> {
+    const current = await this.get(sessionId);
+    if (!current) throw new RuntimeError('SESSION_NOT_FOUND', 'session not found');
+    const absoluteMs = new Date(current.absolute_expires_at).getTime();
+    const idle = new Date(Math.min(absoluteMs, at.getTime() + maxIdleMs));
+    const value = await this.#redis.eval(TOUCH_LUA, [this.#sessionKey(sessionId)], [at.getTime(), maxIdleMs, absoluteMs, at.toISOString(), idle.toISOString()]);
+    throwIfError(value);
+    const parsed = SessionRecordSchema.safeParse(decodeResult<unknown>(value));
+    if (!parsed.success) throw new RuntimeError('STORAGE_ERROR', 'malformed touched session record');
+    return parsed.data;
+  }
+
+  async resetRecovery(sessionId: string): Promise<void> {
+    const result = await this.#redis.eval(RESET_RECOVERY_LUA, [this.#sessionKey(sessionId)], []);
     if (Number(result) === 0) throw new RuntimeError('SESSION_NOT_FOUND', 'session not found');
   }
 

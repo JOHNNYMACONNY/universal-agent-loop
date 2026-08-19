@@ -59,7 +59,7 @@ test('idle expiry fails closed and best-effort ends the remote browser', async (
   current = new Date('2026-08-19T00:04:01.000Z');
   await assert.rejects(services.observe({ session_id: started.session_id }), (error: unknown) => error instanceof RuntimeError && error.code === 'SESSION_EXPIRED');
   assert.equal((await sessions.get(started.session_id))?.lifecycle, 'ENDING');
-  assert.equal((browser as any).endCalls, 1);
+  assert.equal(browser.endCalls, 1);
 });
 
 test('per-session action budget counts individual actions atomically and rejects before browser input', async () => {
@@ -88,7 +88,7 @@ test('reset deliberately recovers a live RECOVERY_REQUIRED session while preserv
   await assert.rejects(services.input({
     session_id: 'session_1', action_batch_id: 'ambiguous', expected_action_seq: 0,
     actions: [{ type: 'key_down', key: 'ArrowUp' }],
-  }), /recovery/i);
+  }), (error: unknown) => error instanceof RuntimeError && error.code === 'SESSION_RECOVERY_REQUIRED');
   const before = (await sessions.get('session_1'))!;
   assert.equal(before.lifecycle, 'RECOVERY_REQUIRED');
   const reset = await services.reset({ session_id: 'session_1', mode: 'target' });
@@ -108,7 +108,7 @@ test('session end is idempotent and is allowed from RECOVERY_REQUIRED without re
   assert.deepEqual(first, { session_id: 'session_1', ended: true });
   assert.deepEqual(second, { session_id: 'session_1', ended: true });
   assert.equal((await sessions.get('session_1'))?.lifecycle, 'ENDING');
-  assert.equal((browser as any).endCalls, 1);
+  assert.equal(browser.endCalls, 1);
 });
 
 test('memory session store action reservation does not double-count completed duplicate batches', async () => {

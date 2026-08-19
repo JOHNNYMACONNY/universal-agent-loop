@@ -100,6 +100,7 @@ export const SessionRecordSchema = z.object({
   absolute_expires_at: z.string().datetime({ offset: true }),
   action_seq: z.number().int().nonnegative(),
   observation_seq: z.number().int().nonnegative(),
+  total_action_count: z.number().int().nonnegative().optional(),
   held_keys: z.array(AllowedKeySchema),
   held_pointer_buttons: z.array(PointerButtonSchema),
   lifecycle: z.enum(['ACTIVE', 'RECOVERY_REQUIRED', 'ENDING']),

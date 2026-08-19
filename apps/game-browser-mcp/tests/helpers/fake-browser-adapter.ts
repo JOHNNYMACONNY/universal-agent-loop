@@ -43,6 +43,7 @@ export class FakeBrowserAdapter implements BrowserAdapter {
   startCalls = 0;
   inputCalls = 0;
   releaseCalls = 0;
+  endCalls = 0;
 
   constructor(options: Options = {}) {
     for (const id of options.ambiguousBatchIds ?? []) this.#ambiguous.add(id);
@@ -104,6 +105,6 @@ export class FakeBrowserAdapter implements BrowserAdapter {
   async readState(session: BrowserSessionRef, path?: string): Promise<unknown> { this.#entry(session); return pointer(this.#state, path); }
   async reset(session: BrowserSessionRef): Promise<BrowserObservation> { const entry = this.#entry(session); entry.heldKeys.clear(); entry.heldPointerButtons.clear(); return this.#observation(entry); }
   async releaseHeldInput(session: BrowserSessionRef): Promise<void> { this.releaseCalls += 1; const entry = this.#entry(session); entry.heldKeys.clear(); entry.heldPointerButtons.clear(); }
-  async end(session: BrowserSessionRef): Promise<void> { const entry = this.#sessions.get(session.sandboxId); if (entry) entry.alive = false; }
+  async end(session: BrowserSessionRef): Promise<void> { this.endCalls += 1; const entry = this.#sessions.get(session.sandboxId); if (entry) entry.alive = false; }
   loseSession(session: BrowserSessionRef): void { const entry = this.#sessions.get(session.sandboxId); if (entry) entry.alive = false; }
 }

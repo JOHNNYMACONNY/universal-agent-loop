@@ -93,15 +93,35 @@ export function createGameToolServices(deps: GameToolDependencies) {
     return value;
   }
 
-  async function ownedSession(id: string): Promise<{ session: SessionRecord; registration: TargetRegistration; ref: BrowserSessionRef }> {
+  async function ownedRecord(id: string): Promise<{ session: SessionRecord; ref: BrowserSessionRef }> {
     const binding = await principalBinding();
     const session = await deps.sessions.get(id);
     if (!session) throw new RuntimeError('SESSION_NOT_FOUND', 'session not found');
     if (session.owner_binding !== binding) throw new RuntimeError('AUTH_CONTEXT_UNAVAILABLE', 'session ownership mismatch');
-    if (new Date(session.absolute_expires_at).getTime() <= now().getTime()) throw new RuntimeError('SESSION_EXPIRED', 'session expired');
-    if (session.lifecycle !== 'ACTIVE') throw new RuntimeError('SESSION_RECOVERY_REQUIRED', `session lifecycle is ${session.lifecycle}`);
-    const reg = await registration(session.target_registration_id);
-    return { session, registration: reg, ref: { logicalSessionId: session.session_id, sandboxId: session.sandbox_id } };
+    return { session, ref: { logicalSessionId: session.session_id, sandboxId: session.sandbox_id } };
+  }
+
+  async function cleanup(record: SessionRecord, ref: BrowserSessionRef): Promise<void> {
+    try { await deps.sessions.end(record.session_id); } catch {}
+    try { await deps.browser.releaseHeldInput(ref); } catch {}
+    try { await deps.sessions.updateHeldInput(record.session_id, [], []); } catch {}
+    try { await deps.browser.end(ref); } catch {}
+  }
+
+  async function usableSession(id: string, allowRecovery = false): Promise<{ session: SessionRecord; registration: TargetRegistration; ref: BrowserSessionRef }> {
+    const owned = await ownedRecord(id);
+    const time = now();
+    const expired = new Date(owned.session.absolute_expires_at).getTime() <= time.getTime()
+      || new Date(owned.session.idle_expires_at).getTime() <= time.getTime();
+    if (expired) {
+      await cleanup(owned.session, owned.ref);
+      throw new RuntimeError('SESSION_EXPIRED', 'session idle/absolute lifetime expired');
+    }
+    if (owned.session.lifecycle === 'ENDING') throw new RuntimeError('SESSION_RECOVERY_REQUIRED', 'session is ending');
+    if (owned.session.lifecycle === 'RECOVERY_REQUIRED' && !allowRecovery) throw new RuntimeError('SESSION_RECOVERY_REQUIRED', 'session requires deliberate reset or end');
+    const reg = await registration(owned.session.target_registration_id);
+    const touched = await deps.sessions.touch(id, time, deps.limits.maxIdleMs);
+    return { session: touched, registration: reg, ref: owned.ref };
   }
 
   async function requireLive(ref: BrowserSessionRef, sessionId: string): Promise<void> {
@@ -139,6 +159,7 @@ export function createGameToolServices(deps: GameToolDependencies) {
       absolute_expires_at: absoluteExpiry.toISOString(),
       action_seq: 0,
       observation_seq: 1,
+      total_action_count: 0,
       held_keys: started.observation.heldKeys as SessionRecord['held_keys'],
       held_pointer_buttons: started.observation.heldPointerButtons as SessionRecord['held_pointer_buttons'],
       lifecycle: 'ACTIVE',
@@ -155,7 +176,7 @@ export function createGameToolServices(deps: GameToolDependencies) {
 
   async function observe(rawInput: unknown) {
     const input = ObserveSchema.parse(rawInput);
-    const owned = await ownedSession(input.session_id);
+    const owned = await usableSession(input.session_id);
     if (input.expected_observation_seq !== undefined && input.expected_observation_seq !== owned.session.observation_seq) throw new RuntimeError('ACTION_REJECTED', 'observation sequence mismatch');
     await requireLive(owned.ref, owned.session.session_id);
     const raw = await deps.browser.observe(owned.ref);
@@ -173,10 +194,16 @@ export function createGameToolServices(deps: GameToolDependencies) {
       if (action.type === 'press' && action.duration_ms !== undefined && action.duration_ms > deps.limits.maxSingleWaitMs) throw new RuntimeError('LIMIT_EXCEEDED', 'press duration exceeds limit');
       if (action.type === 'pointer_move_relative' && (Math.abs(action.delta_x) > deps.limits.maxRelativePointerDelta || Math.abs(action.delta_y) > deps.limits.maxRelativePointerDelta)) throw new RuntimeError('LIMIT_EXCEEDED', 'relative pointer delta exceeds limit');
     }
-    const owned = await ownedSession(parsed.session_id);
+    const owned = await usableSession(parsed.session_id);
     await enforceRate(`${owned.session.owner_binding}:${owned.registration.project_id}:action`, rateLimits.actionCalls);
     await requireLive(owned.ref, owned.session.session_id);
-    const begun = await deps.sessions.beginBatch({ sessionId: parsed.session_id, batchId: parsed.action_batch_id, expectedActionSeq: parsed.expected_action_seq });
+    const begun = await deps.sessions.beginBatch({
+      sessionId: parsed.session_id,
+      batchId: parsed.action_batch_id,
+      expectedActionSeq: parsed.expected_action_seq,
+      actionCount: parsed.actions.length,
+      maxActionsPerSession: deps.limits.maxActionsPerSession,
+    });
     if (begun.kind === 'DUPLICATE') return { ...begun.result, duplicate: true };
 
     let browserResult;
@@ -215,7 +242,7 @@ export function createGameToolServices(deps: GameToolDependencies) {
 
   async function readState(rawInput: unknown) {
     const input = ReadSchema.parse(rawInput);
-    const owned = await ownedSession(input.session_id);
+    const owned = await usableSession(input.session_id);
     await requireLive(owned.ref, owned.session.session_id);
     const value = await deps.browser.readState(owned.ref, input.path);
     return { session_id: input.session_id, deployment_provenance: provenance(owned.registration), content_trust: UNTRUSTED_TARGET_CONTENT, value };
@@ -223,24 +250,26 @@ export function createGameToolServices(deps: GameToolDependencies) {
 
   async function reset(rawInput: unknown) {
     const input = ResetSchema.parse(rawInput);
-    const owned = await ownedSession(input.session_id);
+    const owned = await usableSession(input.session_id, true);
     await requireLive(owned.ref, owned.session.session_id);
-    await deps.browser.releaseHeldInput(owned.ref);
-    await deps.sessions.updateHeldInput(input.session_id, [], []);
+    try { await deps.browser.releaseHeldInput(owned.ref); } catch {}
     const raw = await deps.browser.reset(owned.ref);
+    await deps.sessions.resetRecovery(input.session_id);
     await deps.sessions.updateHeldInput(input.session_id, raw.heldKeys, raw.heldPointerButtons);
+    const touched = await deps.sessions.touch(input.session_id, now(), deps.limits.maxIdleMs);
     const seq = await deps.sessions.nextObservation(input.session_id);
-    const refreshed = (await deps.sessions.get(input.session_id)) ?? owned.session;
+    const refreshed = (await deps.sessions.get(input.session_id)) ?? touched;
     return mapObservation(refreshed, owned.registration, raw, seq, now().toISOString());
   }
 
   async function sessionEnd(rawInput: unknown) {
     const input = SessionSchema.parse(rawInput);
-    const owned = await ownedSession(input.session_id);
+    const owned = await ownedRecord(input.session_id);
+    if (owned.session.lifecycle === 'ENDING') return { session_id: input.session_id, ended: true };
     await deps.sessions.end(input.session_id);
     try { await deps.browser.releaseHeldInput(owned.ref); } catch {}
     try { await deps.sessions.updateHeldInput(input.session_id, [], []); } catch {}
-    await deps.browser.end(owned.ref);
+    try { await deps.browser.end(owned.ref); } catch {}
     return { session_id: input.session_id, ended: true };
   }
 
