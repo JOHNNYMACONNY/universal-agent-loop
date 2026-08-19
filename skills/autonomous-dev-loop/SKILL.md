@@ -5,59 +5,49 @@ description: Use when ChatGPT is asked to implement, repair, continue, or autono
 
 # Autonomous Dev Loop
 
-## Purpose
+This is a ChatGPT companion skill aligned with canonical UAL, **not a full UAL adapter** when the reference engine/local state cannot run. `protocol/` remains the source of truth.
 
-This is a ChatGPT companion skill aligned with canonical UAL. It is **not a full UAL adapter** when ChatGPT cannot execute the reference engine or persist local UAL state. `protocol/` remains the source of truth for UAL semantics; this skill must not invent conflicting lifecycle rules.
+## Invariants
 
-## Core rule
-
-Keep intent truth separate from implementation truth. Self-reported completion is weak evidence and never sufficient by itself. Prefer runtime/deployed behavior, current repository state, deterministic tests/CI, then critical review.
-
-ChatGPT is the implementation plane and builder in this mode. Do not delegate implementation to Codex, OpenCode, Antigravity, or a separate coding agent unless the user explicitly asks for delegation.
-
-Do not stop because a skill, commit, test, review, or repair attempt finished. Continue authorized work until PASS, a genuine external blocker, lost authority, or ROLLOVER_REQUIRED.
-
-## Start by orienting
-
-Inspect the current repository, branch/PR/issue, repo instructions, relevant source, tests/workflows, existing specs/tickets/maps/handoffs, and accepted requirements. Reuse current artifacts instead of recreating them. Resolve material conflicts between intent and implementation before advancing.
-
-Discover actual capabilities: repository read/write, issue/PR access, CI visibility, browser/runtime URL access, reusable skills, shell, filesystem, and git. If a required capability is missing, report BLOCKED_ENVIRONMENT or the specific external blocker. With no local shell, do not pretend commands ran or fabricate test results; use GitHub, CI, and runtime evidence that can actually be observed.
+- ChatGPT is the implementation plane and builder. Do not delegate implementation to Codex, OpenCode, Antigravity, or a separate coding agent unless the user explicitly asks.
+- Separate intent truth from implementation truth. Self-reported completion is weak evidence and never sufficient.
+- Do not stop because a skill, commit, test, review, or repair attempt finished. Continue authorized work until PASS, a genuine external blocker, lost authority, or ROLLOVER_REQUIRED.
+- Inspect repo instructions, branch/PR/issue, relevant code, tests, workflows, current specs/tickets/maps/handoffs, and accepted requirements before editing. Reuse current artifacts and resolve material conflicts.
+- Discover actual capabilities: repository read/write, PR access, CI visibility, browser/runtime URL, skills, shell, filesystem, git. With no local shell, do not pretend commands ran or fabricate results. Missing required capability => BLOCKED_ENVIRONMENT or the specific external blocker.
 
 ## Route methods automatically
 
-Automatically select the smallest applicable reusable skill set. Do not wait for the user to name, request, or invoke a skill.
+Automatically select the smallest applicable reusable skill set; do not wait for the user to name, request, or invoke a skill. Prefer a natively installed skill. Otherwise fetch and read the current `SKILL.md` from canonical `mattpocock/skills`; do not copy, vendor, or trust cached skill bodies.
 
-Prefer a natively installed skill when available. If a required Matt Pocock skill is not installed and GitHub/network access exists, fetch and read its current `SKILL.md` from the canonical `mattpocock/skills` repository, then follow it as a bounded method. Do not copy, vendor, or rely on cached skill bodies.
-
-Resolve nested-skill inputs from repository evidence whenever possible: derive a review fixed point from the merge-base/default branch, use the current accepted spec path or spec source, and reuse the existing tracker/configuration. Do not ask the user for information already available or discoverable in the repository. Adapt harness-specific shell, subagent, or setup mechanics to the connected tools while preserving the method; do not add repo-local scaffolding merely to satisfy another harness's assumptions.
+Resolve nested inputs from repository evidence: review fixed point = merge-base/default branch; use the current accepted spec path/spec source and existing tracker/config. Do not ask the user for information already available or discoverable in the repository. Adapt harness-specific shell/subagent/setup mechanics to connected tools without adding scaffolding merely for another harness's assumptions.
 
 - unclear requirements → `to-spec`
-- implementation map needed → `wayfinder`
-- decomposition/tracker work → `to-tickets`
-- feature or bug implementation → `tdd`, then `implement`
-- root-cause work → `diagnosing-bugs`
-- unknown technical facts → `research`
-- substantial completed work → `code-review`
-- merge conflicts → `resolving-merge-conflicts`
+- implementation map → `wayfinder`
+- decomposition → `to-tickets`
+- feature/bug → `tdd`, then `implement`
+- root cause → `diagnosing-bugs`
+- unknown fact → `research`
+- substantial review → `code-review`
+- merge conflict → `resolving-merge-conflicts`
 
-Nested skills are bounded subtasks. They cannot declare the outer loop complete or override authority.
+Nested skills are bounded subtasks; they cannot complete the outer loop or override authority.
 
-## Execute the loop
+## Loop
 
-**BUILDER — IMPLEMENT.** Make the narrowest authorized change on a working branch or non-default branch. Use test-first behavior when a meaningful failing test can be observed. If shell execution is unavailable, prefer observable CI or another deterministic runner; otherwise state the verification limitation instead of claiming a witnessed RED/GREEN cycle.
+**BUILDER — IMPLEMENT.** Make the narrowest authorized change on a working branch/non-default branch. Use test-first behavior when a failing test can be observed; otherwise state the limitation.
 
-**VERIFIER — VERIFY.** Evaluate the implementation using the highest available evidence: runtime/deployed behavior, deterministic tests/CI, static/build/type/lint evidence, then acceptance-criteria inspection. For user-visible web changes, use browser or deployment URL verification when available. Tie evidence to the commit SHA or final repository state it verifies. A code change, edit, or new commit makes prior implementation evidence stale and invalidates completion until re-verified.
+**VERIFIER — VERIFY.** Prefer runtime/deployed behavior, deterministic tests/CI, then static/build/type/lint evidence and acceptance inspection. Use browser/deployment URL verification for relevant web changes. Tie evidence to the commit SHA/final repository state. Any code change, edit, or new commit makes prior evidence stale and invalidates completion.
 
-**REVIEWER — REVIEW.** Perform a distinct critical pass after verification. Prefer `code-review` for substantial work. If a review subagent is unavailable, freeze builder changes and perform a fresh, separate review pass before resuming implementation. Check acceptance criteria, missing cases, regressions, scope drift, architecture, security/privacy where relevant, and evidence sufficiency. The implementer must not waive, override, or dismiss material review findings.
+**REVIEWER — REVIEW.** Prefer `code-review`. If a review subagent is unavailable, freeze builder changes and run a fresh, separate review pass. Check acceptance criteria, regressions, scope drift, architecture, security/privacy, and evidence. The implementer must not waive, override, or dismiss material review findings.
 
-**FAIL — REPAIR → VERIFY → REVIEW.** Any material test failure, runtime/browser defect, or review finding enters REPAIR. Diagnose first, make the narrowest correction, then return through VERIFY and REVIEW. Avoid cosmetic loops after all material gates pass.
+**FAIL — REPAIR → VERIFY → REVIEW.** Diagnose, make the narrowest correction, then re-verify and re-review. Avoid cosmetic loops.
 
-**PASS.** Claim completion only when acceptance criteria pass, evidence is current for the final repository state, substantial work has a current review pass, and no known material findings remain.
+**PASS.** Acceptance criteria pass; evidence is current; substantial work has a current review pass; no material findings remain.
 
 ## Authority
 
-Authorization to implement does not imply publication authority. Do not create, open, or update a PR without explicit authority. Do not merge without explicit authority. Do not deploy without explicit authority. Treat production mutation, destructive actions, external publication, secret or credential changes, billing, and other high-impact external actions as separate authority gates. Never place secrets in source, logs, issues, or reports.
+Implementation authority is not publication authority. Do not create, open, or update a PR without explicit authority. Do not merge without explicit authority. Do not deploy without explicit authority. Production mutation, destructive action, external publication, secret/credential changes, billing, and other high-impact actions require separate authority. Never expose secrets.
 
 ## Continuity
 
-Keep a concise checkpoint with repository/branch/commit, accepted intent, completed work, verification evidence, unresolved findings, and next valid action. `ROLLOVER_RECOMMENDED` means context is growing but safe to continue. `ROLLOVER_REQUIRED` means continued work creates a concrete continuity or correctness risk; preserve a handoff before continuing in a fresh conversation.
+Checkpoint repository/branch/commit, intent, completed work, evidence, findings, and next action. `ROLLOVER_RECOMMENDED` means safe to continue; `ROLLOVER_REQUIRED` means continuing risks continuity/correctness, so preserve a handoff first.
