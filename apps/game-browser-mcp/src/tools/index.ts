@@ -22,7 +22,9 @@ import { UNTRUSTED_TARGET_CONTENT } from '../security/trust-boundary.js';
 
 const StartSchema = z.object({ target_registration_id: z.string().min(1), expected_commit_sha: z.string().regex(/^[0-9a-f]{40}$/i), viewport: z.object({ width: z.number().int().positive().max(4096), height: z.number().int().positive().max(4096) }).strict().optional() }).strict();
 const SessionSchema = z.object({ session_id: z.string().min(1) }).strict();
+const ObserveSchema = z.object({ session_id: z.string().min(1), expected_observation_seq: z.number().int().nonnegative().optional() }).strict();
 const ReadSchema = SessionSchema.extend({ path: z.string().max(512).regex(/^(?:\/(?:[^~\/]|~[01])*)*$/).optional() }).strict();
+const ResetSchema = z.object({ session_id: z.string().min(1), mode: z.enum(['reload', 'target']).optional() }).strict();
 
 export interface GameToolDependencies {
   registrations: RegistrationStore;
@@ -106,7 +108,7 @@ export function createGameToolServices(deps: GameToolDependencies) {
     const reg = await registration(input.target_registration_id);
     if (reg.expected_commit_sha !== input.expected_commit_sha) throw new RuntimeError('PROVENANCE_MISMATCH', 'expected commit does not match registration');
     const verified = await deps.verifier.verify({ deploymentId: reg.deployment_id, expectedCommitSha: input.expected_commit_sha, repository: reg.repository, projectId: reg.project_id });
-    if (verified.deploymentId !== reg.deployment_id || verified.deploymentUrl !== reg.deployment_url || verified.commitSha !== reg.expected_commit_sha) throw new RuntimeError('PROVENANCE_MISMATCH', 'provider deployment no longer matches registration');
+    if (verified.deploymentId !== reg.deployment_id || new URL(verified.deploymentUrl).origin !== reg.deployment_origin || verified.commitSha !== reg.expected_commit_sha) throw new RuntimeError('PROVENANCE_MISMATCH', 'provider deployment no longer matches registration');
     await validateRegisteredUrl(new URL(reg.deployment_url), reg, deps.resolveDns);
 
     const sessionId = sessionIdFactory();
@@ -141,8 +143,9 @@ export function createGameToolServices(deps: GameToolDependencies) {
   }
 
   async function observe(rawInput: unknown) {
-    const input = SessionSchema.parse(rawInput);
+    const input = ObserveSchema.parse(rawInput);
     const owned = await ownedSession(input.session_id);
+    if (input.expected_observation_seq !== undefined && input.expected_observation_seq !== owned.session.observation_seq) throw new RuntimeError('ACTION_REJECTED', 'observation sequence mismatch');
     await requireLive(owned.ref, owned.session.session_id);
     const raw = await deps.browser.observe(owned.ref);
     await deps.sessions.updateHeldInput(owned.session.session_id, raw.heldKeys, raw.heldPointerButtons);
@@ -207,7 +210,7 @@ export function createGameToolServices(deps: GameToolDependencies) {
   }
 
   async function reset(rawInput: unknown) {
-    const input = SessionSchema.parse(rawInput);
+    const input = ResetSchema.parse(rawInput);
     const owned = await ownedSession(input.session_id);
     await requireLive(owned.ref, owned.session.session_id);
     await deps.browser.releaseHeldInput(owned.ref);
