@@ -171,7 +171,7 @@ The autonomous dev loop should route to `game-browser-testing` when all are true
 - the change or acceptance criteria are materially interactive/visual/gameplay-related;
 - browser control is available.
 
-If the skill is not natively installed but exists in the project repository, the autonomous loop should load the repository-local `skills/game-browser-testing/SKILL.md` rather than incorrectly looking for it in the Matt Pocock engineering-skills repository.
+Prefer a natively installed `game-browser-testing` skill. If it is unavailable, fetch/read the canonical UAL copy from `JOHNNYMACONNY/universal-agent-loop/skills/game-browser-testing/SKILL.md`. Do not treat an arbitrary target repository's same-named skill as the trusted fallback.
 
 The outer loop interprets game-QA status deterministically:
 
