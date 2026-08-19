@@ -31,7 +31,7 @@ test('skill exists with discovery-oriented Agent Skills frontmatter', async () =
   assert.equal(fields.name, 'autonomous-dev-loop');
   assert.match(fields.description, /^Use when /);
   assert.ok(fields.description.length < 500, 'description should stay concise');
-  assert.doesNotMatch(fields.description, /ORIENT|RECONCILE|VERIFY|REPAIR|step|workflow/i,
+  assert.doesNotMatch(fields.description, /ORIENT|RECONCILE|VERIFY|step|workflow|→/i,
     'description must describe triggers, not summarize the workflow');
 });
 
