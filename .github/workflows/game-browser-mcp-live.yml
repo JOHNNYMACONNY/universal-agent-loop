@@ -2,6 +2,11 @@ name: game-browser-mcp-live
 
 on:
   workflow_dispatch:
+    inputs:
+      deployment_id:
+        description: Immutable Vercel deployment ID (dpl_...)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -21,12 +26,20 @@ jobs:
           cache: npm
           cache-dependency-path: apps/game-browser-mcp/package.json
       - run: npm install --prefix apps/game-browser-mcp --no-audit --no-fund
+      - name: Register exact deployment
+        id: registration
+        run: node --import tsx apps/game-browser-mcp/scripts/register-vercel-deployment.ts
+        env:
+          REMOTE_RUNTIME_BASE_URL: ${{ secrets.REMOTE_RUNTIME_BASE_URL }}
+          VERCEL_DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+          EXPECTED_COMMIT_SHA: ${{ github.sha }}
+          REGISTRATION_CONTROL_TOKEN: ${{ secrets.REGISTRATION_CONTROL_TOKEN }}
       - name: Run provider-backed acceptance
         run: npm run test:remote --prefix apps/game-browser-mcp
         env:
-          REMOTE_MCP_URL: ${{ secrets.REMOTE_MCP_URL }}
+          REMOTE_MCP_URL: ${{ secrets.REMOTE_RUNTIME_BASE_URL }}/mcp
           REMOTE_MCP_BEARER_TOKEN: ${{ secrets.REMOTE_MCP_BEARER_TOKEN }}
-          TARGET_REGISTRATION_ID: ${{ secrets.TARGET_REGISTRATION_ID }}
+          TARGET_REGISTRATION_ID: ${{ steps.registration.outputs.target_registration_id }}
           EXPECTED_COMMIT_SHA: ${{ github.sha }}
       - uses: actions/upload-artifact@v4
         if: always()
