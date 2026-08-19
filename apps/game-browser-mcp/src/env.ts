@@ -13,6 +13,7 @@ export interface RuntimeConfig {
     projectId: string;
     repositoryOwner: string;
     repositoryName: string;
+    targetEntryPath: string;
     approvedDeploymentHostPatterns: string[];
     approvedDependencyHosts: string[];
     approvedRedirectHosts: string[];
@@ -52,6 +53,14 @@ function hostList(raw: string | undefined): string[] {
   return [...new Set(raw.split(',').map(normalizeHost))];
 }
 
+function targetEntryPath(raw: string | undefined): string {
+  const value = raw?.trim() || '/';
+  if (!value.startsWith('/') || value.startsWith('//') || value.includes('?') || value.includes('#') || value.split('/').includes('..') || /:\/\//.test(value)) {
+    throw new Error('TARGET_ENTRY_PATH must be an origin-relative path without traversal, query, or fragment');
+  }
+  return value;
+}
+
 export function loadRuntimeConfig(env: Record<string, string | undefined> = process.env): RuntimeConfig {
   return {
     limits: {
@@ -66,6 +75,7 @@ export function loadRuntimeConfig(env: Record<string, string | undefined> = proc
       projectId: env.TARGET_PROJECT_ID?.trim() ?? '',
       repositoryOwner: env.TARGET_REPOSITORY_OWNER?.trim() ?? '',
       repositoryName: env.TARGET_REPOSITORY_NAME?.trim() ?? '',
+      targetEntryPath: targetEntryPath(env.TARGET_ENTRY_PATH),
       approvedDeploymentHostPatterns: hostList(env.APPROVED_DEPLOYMENT_HOST_PATTERNS),
       approvedDependencyHosts: hostList(env.APPROVED_DEPENDENCY_HOSTS),
       approvedRedirectHosts: hostList(env.APPROVED_REDIRECT_HOSTS),
