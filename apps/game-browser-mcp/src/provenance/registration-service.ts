@@ -1,0 +1,89 @@
+import { randomUUID } from 'node:crypto';
+
+import { TargetRegistrationSchema, type TargetRegistration } from '../contracts.js';
+import type { RuntimeConfig } from '../env.js';
+import { RuntimeError } from '../errors.js';
+import type { RegistrationStore } from './registration-store.js';
+import type { DeploymentVerifier } from './types.js';
+
+export interface RegistrationInput {
+  deploymentId: string;
+  expectedCommitSha: string;
+}
+
+interface Options {
+  verifier: DeploymentVerifier;
+  store: RegistrationStore;
+  trust: RuntimeConfig['trust'];
+  now?: () => Date;
+  idFactory?: () => string;
+  registrationTtlMs?: number;
+}
+
+function hostMatchesPattern(host: string, pattern: string): boolean {
+  if (pattern.startsWith('*.')) {
+    const base = pattern.slice(2);
+    return host === base || host.endsWith(`.${base}`);
+  }
+  return host === pattern;
+}
+
+export class RegistrationService {
+  readonly #verifier: DeploymentVerifier;
+  readonly #store: RegistrationStore;
+  readonly #trust: RuntimeConfig['trust'];
+  readonly #now: () => Date;
+  readonly #idFactory: () => string;
+  readonly #ttlMs: number;
+
+  constructor(options: Options) {
+    this.#verifier = options.verifier;
+    this.#store = options.store;
+    this.#trust = options.trust;
+    this.#now = options.now ?? (() => new Date());
+    this.#idFactory = options.idFactory ?? (() => `reg_${randomUUID()}`);
+    this.#ttlMs = options.registrationTtlMs ?? 15 * 60_000;
+  }
+
+  async register(input: RegistrationInput): Promise<TargetRegistration> {
+    if (!this.#trust.projectId || !this.#trust.repositoryOwner || !this.#trust.repositoryName) {
+      throw new RuntimeError('PROVENANCE_MISMATCH', 'server-owned project trust configuration is incomplete');
+    }
+
+    const repository = { owner: this.#trust.repositoryOwner, name: this.#trust.repositoryName };
+    const verified = await this.#verifier.verify({
+      deploymentId: input.deploymentId,
+      expectedCommitSha: input.expectedCommitSha,
+      repository,
+      projectId: this.#trust.projectId,
+    });
+
+    const deploymentUrl = new URL(verified.deploymentUrl);
+    const host = deploymentUrl.hostname.toLowerCase();
+    if (!this.#trust.approvedDeploymentHostPatterns.some((pattern) => hostMatchesPattern(host, pattern))) {
+      throw new RuntimeError('TARGET_BLOCKED', 'verified deployment host is outside project trust policy');
+    }
+
+    const created = this.#now();
+    const registration = TargetRegistrationSchema.parse({
+      target_registration_id: this.#idFactory(),
+      project_id: this.#trust.projectId,
+      repository,
+      expected_commit_sha: verified.commitSha,
+      deployment_id: verified.deploymentId,
+      deployment_url: deploymentUrl.toString().replace(/\/$/, ''),
+      deployment_origin: deploymentUrl.origin,
+      allowed_hosts: [...new Set([
+        host,
+        ...this.#trust.approvedDependencyHosts,
+        ...this.#trust.approvedRedirectHosts,
+      ])],
+      created_at: created.toISOString(),
+      expires_at: new Date(created.getTime() + this.#ttlMs).toISOString(),
+      provenance_source: 'provider_api',
+    });
+
+    await this.#store.put(registration);
+    return registration;
+  }
+}
