@@ -41,6 +41,10 @@ never own or terminate it.
   optional scenario checks and optional read-oriented `window.__GAME_TEST__`
   instrumentation. It returns evidence/findings to its caller and does not own
   the outer development lifecycle.
+- `apps/game-browser-mcp/` — an independently deployable remote MCP/browser
+  execution backend for `game-browser-testing`. Its Node/Express/MCP/Redis/
+  Vercel Sandbox dependencies are isolated to that child package and are not
+  dependencies of the canonical UAL engine.
 - `tests/` — fixture-driven tests over normal and adversarial repository
   states plus static skill-conformance tests. Run with `npm test` (Node >= 18,
   zero dependencies).
@@ -51,10 +55,10 @@ never own or terminate it.
   implement them; they do not redefine them.
 - Companion skills may reuse UAL invariants but must state capability
   limitations explicitly rather than claiming adapter parity.
-- Browser-control infrastructure is an external capability. Do not embed a
-  remote browser service, MCP server, Playwright runtime, or other browser
-  dependency into the canonical protocol/reference engine merely to satisfy a
-  companion skill.
+- Browser-control infrastructure is an external execution boundary even when
+  its deployable package is colocated under `apps/`. Do not move the MCP
+  server, browser/Sandbox runtime, Redis state, or browser dependencies into
+  `protocol/`, root `src/`, root `bin/`, or the root dependency graph.
 - Deterministic parsing and state transitions live in the engine. Judgment
   calls (task scope, architecture decisions, critic review) belong to the
   agent and are passed into the engine as explicit inputs.
@@ -86,8 +90,10 @@ When a public/deployed browser game and an actual browser-control capability
 are available, that loop can route interactive verification to
 `skills/game-browser-testing/SKILL.md`. The game tester defaults to autonomous
 exploration, can execute explicit regression scenarios, follows sense → act →
-verify, and returns reproducible findings. The callable remote browser/MCP or
-plugin runtime is intentionally external to this repository.
+verify, and returns reproducible findings. `apps/game-browser-mcp/` is the
+colocated deployable implementation of the remote callable capability; it
+remains outside canonical UAL protocol/reference-engine semantics. See its
+README for deployment, security, provenance, and completion gates.
 
 ## Authority
 
