@@ -55,7 +55,7 @@ test('provenance and registration require exact 40-character SHAs and HTTPS targ
 test('session records use closed lifecycle and tracked held input', () => {
   const parsed = SessionRecordSchema.parse({
     session_id: 's', sandbox_id: 'sbx', target_registration_id: 'r',
-    target_origin: 'https://x.vercel.app', owner_binding: 'owner-hash',
+    target_origin: 'https://x.vercel.app', owner_binding: 'owner-binding-hash-1234',
     created_at: '2026-08-19T00:00:00.000Z', last_seen_at: '2026-08-19T00:00:00.000Z',
     idle_expires_at: '2026-08-19T00:03:00.000Z', absolute_expires_at: '2026-08-19T00:15:00.000Z',
     action_seq: 0, observation_seq: 0, held_keys: [], held_pointer_buttons: [], lifecycle: 'ACTIVE'
