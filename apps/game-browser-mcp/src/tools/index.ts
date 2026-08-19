@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
 import type { PrincipalResolver } from '../auth/principal.js';
+import type { RateLimiter } from '../auth/rate-limit.js';
 import type { BrowserAdapter, BrowserObservation, BrowserSessionRef } from '../browser/browser-adapter.js';
 import {
   GameInputSchema,
@@ -34,6 +35,8 @@ export interface GameToolDependencies {
   principals: PrincipalResolver;
   resolveDns: DnsResolver;
   limits: SessionLimits;
+  rateLimiter?: RateLimiter;
+  rateLimits?: { sessionStarts: number; actionCalls: number; windowMs: number };
   now?: () => Date;
   sessionIdFactory?: () => string;
 }
@@ -69,11 +72,18 @@ function mapObservation(session: SessionRecord, registration: TargetRegistration
 export function createGameToolServices(deps: GameToolDependencies) {
   const now = deps.now ?? (() => new Date());
   const sessionIdFactory = deps.sessionIdFactory ?? (() => `session_${randomUUID()}`);
+  const rateLimits = deps.rateLimits ?? { sessionStarts: 6, actionCalls: 120, windowMs: 60_000 };
 
   async function principalBinding(): Promise<string> {
     const principal = await deps.principals.resolve();
     if (!principal.binding || principal.binding.length < 16) throw new RuntimeError('AUTH_CONTEXT_UNAVAILABLE', 'stable principal binding unavailable');
     return principal.binding;
+  }
+
+  async function enforceRate(key: string, limit: number): Promise<void> {
+    if (!deps.rateLimiter) return;
+    const result = await deps.rateLimiter.consume({ key, limit, windowMs: rateLimits.windowMs });
+    if (!result.allowed) throw new RuntimeError('LIMIT_EXCEEDED', 'rate limit exceeded', { retryAfterMs: result.retryAfterMs });
   }
 
   async function registration(id: string): Promise<TargetRegistration> {
@@ -106,6 +116,7 @@ export function createGameToolServices(deps: GameToolDependencies) {
     const input = StartSchema.parse(rawInput);
     const binding = await principalBinding();
     const reg = await registration(input.target_registration_id);
+    await enforceRate(`${binding}:${reg.project_id}:session-start`, rateLimits.sessionStarts);
     if (reg.expected_commit_sha !== input.expected_commit_sha) throw new RuntimeError('PROVENANCE_MISMATCH', 'expected commit does not match registration');
     const verified = await deps.verifier.verify({ deploymentId: reg.deployment_id, expectedCommitSha: input.expected_commit_sha, repository: reg.repository, projectId: reg.project_id });
     if (verified.deploymentId !== reg.deployment_id || new URL(verified.deploymentUrl).origin !== reg.deployment_origin || verified.commitSha !== reg.expected_commit_sha) throw new RuntimeError('PROVENANCE_MISMATCH', 'provider deployment no longer matches registration');
@@ -163,6 +174,7 @@ export function createGameToolServices(deps: GameToolDependencies) {
       if (action.type === 'pointer_move_relative' && (Math.abs(action.delta_x) > deps.limits.maxRelativePointerDelta || Math.abs(action.delta_y) > deps.limits.maxRelativePointerDelta)) throw new RuntimeError('LIMIT_EXCEEDED', 'relative pointer delta exceeds limit');
     }
     const owned = await ownedSession(parsed.session_id);
+    await enforceRate(`${owned.session.owner_binding}:${owned.registration.project_id}:action`, rateLimits.actionCalls);
     await requireLive(owned.ref, owned.session.session_id);
     const begun = await deps.sessions.beginBatch({ sessionId: parsed.session_id, batchId: parsed.action_batch_id, expectedActionSeq: parsed.expected_action_seq });
     if (begun.kind === 'DUPLICATE') return { ...begun.result, duplicate: true };
