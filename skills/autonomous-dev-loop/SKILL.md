@@ -13,6 +13,8 @@ This is a ChatGPT companion skill aligned with canonical UAL. It is **not a full
 
 Keep intent truth separate from implementation truth. Self-reported completion is weak evidence and never sufficient by itself. Prefer runtime/deployed behavior, current repository state, deterministic tests/CI, then critical review.
 
+ChatGPT is the implementation plane and builder in this mode. Do not delegate implementation to Codex, OpenCode, Antigravity, or a separate coding agent unless the user explicitly asks for delegation.
+
 Do not stop because a skill, commit, test, review, or repair attempt finished. Continue authorized work until PASS, a genuine external blocker, lost authority, or ROLLOVER_REQUIRED.
 
 ## Start by orienting
@@ -24,6 +26,8 @@ Discover actual capabilities: repository read/write, issue/PR access, CI visibil
 ## Route methods automatically
 
 Automatically select the smallest applicable reusable skill set. Do not wait for the user to name, request, or invoke a skill.
+
+Prefer a natively installed skill when available. If a required Matt Pocock skill is not installed and GitHub/network access exists, fetch and read its current `SKILL.md` from the canonical `mattpocock/skills` repository, then follow it as a bounded method. Do not copy, vendor, or rely on cached skill bodies.
 
 - unclear requirements → `to-spec`
 - implementation map needed → `wayfinder`
@@ -42,7 +46,7 @@ Nested skills are bounded subtasks. They cannot declare the outer loop complete 
 
 **VERIFIER — VERIFY.** Evaluate the implementation using the highest available evidence: runtime/deployed behavior, deterministic tests/CI, static/build/type/lint evidence, then acceptance-criteria inspection. For user-visible web changes, use browser or deployment URL verification when available. Tie evidence to the commit SHA or final repository state it verifies. A code change, edit, or new commit makes prior implementation evidence stale and invalidates completion until re-verified.
 
-**REVIEWER — REVIEW.** Perform a distinct critical pass after verification. Prefer `code-review` for substantial work. Check acceptance criteria, missing cases, regressions, scope drift, architecture, security/privacy where relevant, and evidence sufficiency. The implementer must not waive, override, or dismiss material review findings.
+**REVIEWER — REVIEW.** Perform a distinct critical pass after verification. Prefer `code-review` for substantial work. If a review subagent is unavailable, freeze builder changes and perform a fresh, separate review pass before resuming implementation. Check acceptance criteria, missing cases, regressions, scope drift, architecture, security/privacy where relevant, and evidence sufficiency. The implementer must not waive, override, or dismiss material review findings.
 
 **FAIL — REPAIR → VERIFY → REVIEW.** Any material test failure, runtime/browser defect, or review finding enters REPAIR. Diagnose first, make the narrowest correction, then return through VERIFY and REVIEW. Avoid cosmetic loops after all material gates pass.
 
@@ -50,7 +54,7 @@ Nested skills are bounded subtasks. They cannot declare the outer loop complete 
 
 ## Authority
 
-Authorization to implement does not imply authorization to merge or deploy. Do not merge without explicit authority. Do not deploy without explicit authority. Treat production mutation, destructive actions, secret or credential changes, billing, and other high-impact external actions as separate authority gates. Never place secrets in source, logs, issues, or reports.
+Authorization to implement does not imply publication authority. Do not create, open, or update a PR without explicit authority. Do not merge without explicit authority. Do not deploy without explicit authority. Treat production mutation, destructive actions, external publication, secret or credential changes, billing, and other high-impact external actions as separate authority gates. Never place secrets in source, logs, issues, or reports.
 
 ## Continuity
 
