@@ -18,14 +18,18 @@ test('GPT Action production workflow promotes existing Preview secrets without e
   assert.doesNotMatch(workflow, /printf\s+[^\n]*\$(github_token|action_key)/);
 });
 
-test('production promotion resolves the permanent Action key from the branch and allows GitHub token fallback to newest global Preview value', async () => {
+test('production promotion resolves branch-scoped credentials through Vercel branch filtering and uses newest global Preview GitHub token only as fallback', async () => {
   const workflow = await readFile(workflowUrl, 'utf8');
 
-  assert.match(workflow, /branch_value\(\)/);
+  assert.match(workflow, /encoded_branch=/);
+  assert.match(workflow, /\/env\?gitBranch=\$encoded_branch&decrypt=true&teamId=/);
+  assert.match(workflow, /\/tmp\/branch-env\.json/);
+  assert.match(workflow, /\/tmp\/all-env\.json/);
+  assert.match(workflow, /branch_env_value\(\)/);
   assert.match(workflow, /global_preview_value\(\)/);
   assert.match(workflow, /sort_by\(\.updatedAt \/\/ \.createdAt \/\/ 0\) \| last/);
-  assert.match(workflow, /branch_value UAL_ACTION_API_KEY/);
-  assert.match(workflow, /branch_value GITHUB_TOKEN/);
+  assert.match(workflow, /branch_env_value UAL_ACTION_API_KEY/);
+  assert.match(workflow, /branch_env_value GITHUB_TOKEN/);
   assert.match(workflow, /global_preview_value GITHUB_TOKEN/);
 });
 
