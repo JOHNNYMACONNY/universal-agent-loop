@@ -116,13 +116,19 @@ export async function runAcceptanceSequence(call: ToolCaller, config: Acceptance
   const heldMovementObserved = heldPlayer.x !== initialPlayer.x || heldPlayer.y !== initialPlayer.y;
   assert(heldMovementObserved, 'held key did not produce movement across calls');
 
-  await input('right_down', [{ type: 'key_down', key: 'ArrowRight' }]);
+  await input('up_up', [{ type: 'key_up', key: 'ArrowUp' }]);
+  await input('diagonal_down', [
+    { type: 'key_down', key: 'ArrowRight' },
+    { type: 'key_down', key: 'ArrowDown' },
+  ]);
   await input('combined_wait', [{ type: 'wait', duration_ms: 300 }]);
   const combinedPlayer = point(await call('game_read_state', { session_id: sessionId, path: '/player' }));
   const combinedMovementObserved = combinedPlayer.x !== heldPlayer.x && combinedPlayer.y !== heldPlayer.y;
   assert(combinedMovementObserved, 'simultaneous movement did not change both axes');
-  await input('right_up', [{ type: 'key_up', key: 'ArrowRight' }]);
-  await input('up_up', [{ type: 'key_up', key: 'ArrowUp' }]);
+  await input('diagonal_up', [
+    { type: 'key_up', key: 'ArrowRight' },
+    { type: 'key_up', key: 'ArrowDown' },
+  ]);
   await input('relative_pointer', [{ type: 'pointer_move_relative', delta_x: 30, delta_y: -15 }]);
   await observe();
 
