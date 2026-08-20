@@ -57,26 +57,29 @@ jobs:
           set -euo pipefail
           api='https://api.vercel.com'
           auth="Authorization: Bearer $VERCEL_TOKEN"
-          status=$(curl -sS -o /tmp/preview-env.json -w '%{http_code}' -H "$auth" \
-            "$api/v10/projects/$VERCEL_PROJECT_ID/env?decrypt=true&teamId=$VERCEL_TEAM_ID")
-          if [ "$status" != '200' ]; then
-            echo "::error::Unable to read Preview environment variables (HTTP $status)"
+          encoded_branch=$(jq -rn --arg value "$SOURCE_PREVIEW_BRANCH" '$value|@uri')
+
+          branch_status=$(curl -sS -o /tmp/branch-env.json -w '%{http_code}' -H "$auth" \
+            "$api/v10/projects/$VERCEL_PROJECT_ID/env?gitBranch=$encoded_branch&decrypt=true&teamId=$VERCEL_TEAM_ID")
+          if [ "$branch_status" != '200' ]; then
+            echo "::error::Unable to read branch-scoped Preview environment variables (HTTP $branch_status)"
             exit 1
           fi
 
-          branch_value() {
+          all_status=$(curl -sS -o /tmp/all-env.json -w '%{http_code}' -H "$auth" \
+            "$api/v10/projects/$VERCEL_PROJECT_ID/env?decrypt=true&teamId=$VERCEL_TEAM_ID")
+          if [ "$all_status" != '200' ]; then
+            echo "::error::Unable to read Preview environment variables (HTTP $all_status)"
+            exit 1
+          fi
+
+          branch_env_value() {
             local key="$1"
-            jq -r --arg key "$key" --arg branch "$SOURCE_PREVIEW_BRANCH" '
-              [.envs[]
-                | select(
-                    .key == $key
-                    and .gitBranch == $branch
-                    and ((.target // []) | index("preview"))
-                  )
-              ]
+            jq -r --arg key "$key" '
+              [.envs[] | select(.key == $key)]
               | sort_by(.updatedAt // .createdAt // 0) | last
               | .value // empty
-            ' /tmp/preview-env.json
+            ' /tmp/branch-env.json
           }
 
           global_preview_value() {
@@ -91,14 +94,14 @@ jobs:
               ]
               | sort_by(.updatedAt // .createdAt // 0) | last
               | .value // empty
-            ' /tmp/preview-env.json
+            ' /tmp/all-env.json
           }
 
-          github_token=$(branch_value GITHUB_TOKEN)
+          github_token=$(branch_env_value GITHUB_TOKEN)
           if [ -z "$github_token" ]; then
             github_token=$(global_preview_value GITHUB_TOKEN)
           fi
-          action_key=$(branch_value UAL_ACTION_API_KEY)
+          action_key=$(branch_env_value UAL_ACTION_API_KEY)
 
           if [ -z "$github_token" ]; then
             echo "::error::Permanent Preview GITHUB_TOKEN was not found"
@@ -127,7 +130,7 @@ jobs:
           promote_value GITHUB_TOKEN "$github_token"
           promote_value UAL_ACTION_API_KEY "$action_key"
           echo "PRODUCTION_ACTION_KEY=$action_key" >> "$GITHUB_ENV"
-          rm -f /tmp/preview-env.json /tmp/promote-result.json
+          rm -f /tmp/branch-env.json /tmp/all-env.json /tmp/promote-result.json
 
       - name: Deploy merged main to Production
         id: deploy
