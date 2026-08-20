@@ -2,8 +2,6 @@ name: gpt-action-api-production
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
@@ -14,17 +12,12 @@ concurrency:
 
 jobs:
   deploy-and-verify:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' &&
-       github.event.head_commit.message == 'chore: trigger one-shot GPT Action production')
     runs-on: ubuntu-latest
     env:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_TEAM_ID: team_3LfEMNVsAEbXKLoCrnzXQzrF
       VERCEL_TEAM_SLUG: johnny-maconnys-projects
       VERCEL_PROJECT_ID: prj_80jo2dodxOmSSvX6muUc7Tc7wIo1
-      SOURCE_PREVIEW_BRANCH: chatgpt/gpt-action-api-step-3a
       PRODUCTION_URL: https://ual-gpt-action-api.vercel.app
     steps:
       - uses: actions/checkout@v4
@@ -45,44 +38,62 @@ jobs:
             exit 1
           fi
 
-      - name: Promote branch-scoped Preview credentials to Production
+      - name: Validate persistent Production runtime credentials
         shell: bash
         run: |
           set -euo pipefail
           api='https://api.vercel.com'
           auth="Authorization: Bearer $VERCEL_TOKEN"
-          encoded_branch=$(jq -rn --arg value "$SOURCE_PREVIEW_BRANCH" '$value|@uri')
-          status=$(curl -sS -o /tmp/preview-env.json -w '%{http_code}' -H "$auth" \
-            "$api/v10/projects/$VERCEL_PROJECT_ID/env?gitBranch=$encoded_branch&decrypt=true&teamId=$VERCEL_TEAM_ID")
+
+          status=$(curl -sS -o /tmp/project-env.json -w '%{http_code}' -H "$auth" \
+            "$api/v10/projects/$VERCEL_PROJECT_ID/env?decrypt=true&teamId=$VERCEL_TEAM_ID")
           if [ "$status" != '200' ]; then
-            echo "::error::Unable to read source Preview environment variables (HTTP $status)"
+            echo "::error::Unable to read Vercel project environment variables (HTTP $status)"
             exit 1
           fi
 
-          promote() {
-            local key="$1" value body promote_status
-            value=$(jq -r --arg key "$key" '[.envs[] | select(.key == $key)] | first | .value // empty' /tmp/preview-env.json)
-            if [ -z "$value" ]; then
-              echo "::error::Required branch-scoped Preview variable $key was not found"
-              exit 1
-            fi
-            echo "::add-mask::$value"
-            body=$(jq -n --arg key "$key" --arg value "$value" '{key:$key,value:$value,type:"encrypted",target:["production"]}')
-            promote_status=$(curl -sS -o /tmp/promote-result.json -w '%{http_code}' -X POST \
-              "$api/v10/projects/$VERCEL_PROJECT_ID/env?upsert=true&teamId=$VERCEL_TEAM_ID" \
-              -H "$auth" -H 'Content-Type: application/json' --data "$body")
-            if [ "$promote_status" != '200' ] && [ "$promote_status" != '201' ]; then
-              echo "::error::Unable to promote $key to Production (HTTP $promote_status)"
-              exit 1
-            fi
-            if [ "$key" = 'UAL_ACTION_API_KEY' ]; then
-              echo "PRODUCTION_ACTION_KEY=$value" >> "$GITHUB_ENV"
-            fi
+          production_value() {
+            local key="$1"
+            jq -r --arg key "$key" '
+              [.envs[]
+                | select(
+                    .key == $key
+                    and ((.gitBranch // "") == "")
+                    and ((.target // []) | index("production"))
+                  )
+              ]
+              | sort_by(.updatedAt // .createdAt // 0) | last
+              | .value // empty
+            ' /tmp/project-env.json
           }
 
-          promote GITHUB_TOKEN
-          promote UAL_ACTION_API_KEY
-          rm -f /tmp/preview-env.json /tmp/promote-result.json
+          github_token=$(production_value GITHUB_TOKEN)
+          action_key=$(production_value UAL_ACTION_API_KEY)
+
+          if [ -z "$github_token" ]; then
+            echo "::error::Persistent Production GITHUB_TOKEN was not found"
+            exit 1
+          fi
+          if [ -z "$action_key" ]; then
+            echo "::error::Persistent Production UAL_ACTION_API_KEY was not found"
+            exit 1
+          fi
+
+          echo "::add-mask::$github_token"
+          echo "::add-mask::$action_key"
+
+          github_status=$(curl -sS -o /tmp/github-skill.json -w '%{http_code}' \
+            -H "Authorization: Bearer $github_token" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/JOHNNYMACONNY/universal-agent-loop/contents/skills/autonomous-dev-loop/SKILL.md?ref=main")
+          if [ "$github_status" != '200' ]; then
+            echo "::error::Persistent Production GITHUB_TOKEN cannot read the canonical private skill (HTTP $github_status)"
+            exit 1
+          fi
+
+          echo "PRODUCTION_ACTION_KEY=$action_key" >> "$GITHUB_ENV"
+          rm -f /tmp/project-env.json /tmp/github-skill.json
 
       - name: Deploy merged main to Production
         id: deploy
