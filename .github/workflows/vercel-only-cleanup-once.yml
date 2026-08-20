@@ -1,0 +1,106 @@
+name: vercel-only-cleanup-once
+
+on:
+  push:
+    branches: [chatgpt/autonomous-dev-loop]
+    paths:
+      - .github/workflows/vercel-only-cleanup-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/autonomous-dev-loop
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Remove obsolete Redis implementation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, re
+
+          root = Path('apps/game-browser-mcp')
+
+          pkg_path = root / 'package.json'
+          pkg = json.loads(pkg_path.read_text())
+          pkg.get('dependencies', {}).pop('@upstash/redis', None)
+          pkg_path.write_text(json.dumps(pkg, indent=2) + '\n')
+
+          auth_path = root / 'tests/auth.test.ts'
+          auth = auth_path.read_text()
+          auth = auth.replace(
+              "import { MemoryRateLimiter, RedisRateLimiter, RATE_LIMIT_LUA } from '../src/auth/rate-limit.js';",
+              "import { MemoryRateLimiter } from '../src/auth/rate-limit.js';",
+          )
+          auth = re.sub(r"\ntest\('Redis rate limiter uses one atomic EVAL for increment \+ expiry',[\s\S]*\Z", "\n", auth)
+          auth_path.write_text(auth)
+
+          store_path = root / 'tests/session-store.test.ts'
+          store = store_path.read_text()
+          store = store.replace("import type { SessionRecord, TargetRegistration } from '../src/contracts.js';", "import type { SessionRecord } from '../src/contracts.js';")
+          store = store.replace("import { RuntimeError } from '../src/errors.js';\n", "")
+          store = store.replace("import { UpstashRegistrationStore } from '../src/provenance/upstash-registration-store.js';\n", "")
+          store = re.sub(r"\nconst REG: TargetRegistration = \{[\s\S]*?\n\};\n", "\n", store, count=1)
+          store = re.sub(r"\ntest\('Upstash registration store writes with TTL, is idempotent, and rejects malformed/drifting records',[\s\S]*\Z", "\n", store)
+          store_path.write_text(store)
+
+          for rel in [
+              'tests/input-idempotency.test.ts',
+              'src/sessions/upstash-session-store.ts',
+              'src/provenance/upstash-registration-store.ts',
+          ]:
+              path = root / rel
+              if path.exists(): path.unlink()
+
+          readme_path = root / 'README.md'
+          readme = readme_path.read_text()
+          readme = readme.replace(
+              '-> Upstash Redis session/registration/idempotency state\n-> Vercel Sandbox',
+              '-> signed target-registration capability\n-> named persistent Vercel Sandbox\n   -> sandbox-local durable session/idempotency ledger',
+          )
+          readme = readme.replace('UPSTASH_REDIS_REST_URL\nUPSTASH_REDIS_REST_TOKEN\n', '')
+          readme = readme.replace('REGISTRATION_CONTROL_TOKEN\nOWNER_BINDING_SECRET', 'REGISTRATION_CONTROL_TOKEN\nREGISTRATION_CAPABILITY_SECRET\nOWNER_BINDING_SECRET')
+          readme = readme.replace(
+              'The runner creates a fresh MCP client for every tool call and proves browser-session continuity through remote durable state only.',
+              'The runner creates a fresh MCP client for every tool call and proves browser-session continuity through the named persistent Sandbox ledger rather than coordinator memory. Restored filesystem state never counts as restored Chromium state.',
+          )
+          readme = readme.replace(
+              '### `RUNTIME_COMPLETE`',
+              'Production coarse abuse limiting is configured at the Vercel edge/WAF layer; deterministic session/action/body limits remain enforced in runtime code.\n\n### `RUNTIME_COMPLETE`',
+          )
+          readme_path.write_text(readme)
+
+          preflight_path = Path('.github/workflows/game-browser-provider-preflight.yml')
+          preflight = preflight_path.read_text()
+          preflight = re.sub(r"\s+UPSTASH_REDIS_REST_URL:.*\n", "", preflight)
+          preflight = re.sub(r"\s+UPSTASH_REDIS_REST_TOKEN:.*\n", "", preflight)
+          preflight = preflight.replace(
+              '          REGISTRATION_CONTROL_TOKEN: ${{ secrets.REGISTRATION_CONTROL_TOKEN }}\n',
+              '          REGISTRATION_CONTROL_TOKEN: ${{ secrets.REGISTRATION_CONTROL_TOKEN }}\n          REGISTRATION_CAPABILITY_SECRET: ${{ secrets.REGISTRATION_CAPABILITY_SECRET }}\n',
+          )
+          preflight = re.sub(r"\s+UPSTASH_REDIS_REST_URL \\\n", "", preflight)
+          preflight = re.sub(r"\s+UPSTASH_REDIS_REST_TOKEN \\\n", "", preflight)
+          preflight = preflight.replace(
+              '            REGISTRATION_CONTROL_TOKEN \\\n',
+              '            REGISTRATION_CONTROL_TOKEN \\\n            REGISTRATION_CAPABILITY_SECRET \\\n',
+          )
+          preflight_path.write_text(preflight)
+          PY
+          npm install --prefix apps/game-browser-mcp --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Commit deterministic cleanup
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add apps/game-browser-mcp .github/workflows/game-browser-provider-preflight.yml
+          if git diff --cached --quiet; then
+            echo "No cleanup changes required"
+            exit 0
+          fi
+          git commit -m "refactor: remove Redis from browser runtime"
+          git push origin HEAD:chatgpt/autonomous-dev-loop
