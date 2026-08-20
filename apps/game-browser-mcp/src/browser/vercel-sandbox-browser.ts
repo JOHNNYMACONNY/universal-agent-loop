@@ -13,6 +13,8 @@ import type {
   BrowserStartResult,
 } from './browser-adapter.js';
 
+const VERCEL_MIN_SNAPSHOT_EXPIRATION_MS = 24 * 60 * 60_000;
+
 export interface SandboxCommandResult {
   exitCode: number;
   stdout(): Promise<string>;
@@ -123,10 +125,15 @@ export class VercelSandboxBrowser implements BrowserAdapter {
   readonly #workerPath: string;
 
   constructor(options: Options) {
+    const snapshotExpirationMs = options.snapshotExpirationMs ?? VERCEL_MIN_SNAPSHOT_EXPIRATION_MS;
+    if (!Number.isFinite(snapshotExpirationMs) || snapshotExpirationMs < VERCEL_MIN_SNAPSHOT_EXPIRATION_MS) {
+      throw new Error(`snapshotExpirationMs must be at least ${VERCEL_MIN_SNAPSHOT_EXPIRATION_MS} ms`);
+    }
+
     this.#factory = options.factory ?? new SdkFactory();
     this.#snapshotId = options.snapshotId;
     this.#timeoutMs = options.timeoutMs ?? 15 * 60_000;
-    this.#snapshotExpirationMs = options.snapshotExpirationMs ?? 60 * 60_000;
+    this.#snapshotExpirationMs = snapshotExpirationMs;
     this.#workerPath = options.workerPath ?? '/vercel/sandbox/worker.mjs';
   }
 
