@@ -277,9 +277,16 @@ export function createGameToolServices(deps: GameToolDependencies) {
 
   async function sessionEnd(rawInput: unknown) {
     const input = SessionSchema.parse(rawInput);
-    const owned = await ownedRecord(input.session_id);
-    if (owned.session.lifecycle === 'ENDING') return { session_id: input.session_id, ended: true };
-    await deps.sessions.end(input.session_id);
+    let owned: { session: SessionRecord; ref: BrowserSessionRef };
+    try {
+      owned = await ownedRecord(input.session_id);
+    } catch (error) {
+      if (error instanceof RuntimeError && (error.code === 'SESSION_NOT_FOUND' || error.code === 'SESSION_EXPIRED')) {
+        return { session_id: input.session_id, ended: true };
+      }
+      throw error;
+    }
+    if (owned.session.lifecycle !== 'ENDING') await deps.sessions.end(input.session_id);
     try { await deps.browser.releaseHeldInput(owned.ref); } catch {}
     try { await deps.sessions.updateHeldInput(input.session_id, [], []); } catch {}
     try { await deps.browser.end(owned.ref); } catch {}
