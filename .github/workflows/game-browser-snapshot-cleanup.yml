@@ -1,0 +1,45 @@
+name: game-browser-snapshot-cleanup
+
+on:
+  pull_request:
+    types: [synchronize]
+    branches: [main]
+    paths:
+      - .github/workflows/game-browser-snapshot-cleanup.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      VERCEL_TEAM_ID: team_3LfEMNVsAEbXKLoCrnzXQzrF
+      VERCEL_PROJECT_ID: prj_bU062HqgwiUYUtMuX4nRN0GpXRd9
+    steps:
+      - name: List dedicated-project snapshots
+        shell: bash
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${VERCEL_TOKEN:-}"
+          status=$(curl -sS -o /tmp/snapshots.json -w '%{http_code}' \
+            "https://api.vercel.com/v2/sandboxes/snapshots?project=$VERCEL_PROJECT_ID&teamId=$VERCEL_TEAM_ID&limit=100&sortOrder=asc" \
+            -H "Authorization: Bearer $VERCEL_TOKEN")
+          if [ "$status" != "200" ]; then
+            echo "::error::Unable to list dedicated-project Sandbox snapshots (HTTP $status)"
+            jq -r '.error.code // empty, .error.message // empty' /tmp/snapshots.json || true
+            exit 1
+          fi
+          jq -r '
+            def rows:
+              if (.snapshots? | type) == "array" then .snapshots
+              elif (.data?.snapshots? | type) == "array" then .data.snapshots
+              elif (.data? | type) == "array" then .data
+              else [] end;
+            rows as $rows |
+            "SNAPSHOT_COUNT=\($rows|length)",
+            ($rows[] | "SNAPSHOT \(.id) size=\(.sizeBytes // 0) expires=\(.expiresAt // "none") source=\(.sourceSessionId // "unknown")")
+          ' /tmp/snapshots.json
