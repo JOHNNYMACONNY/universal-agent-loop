@@ -1,10 +1,10 @@
 import type { TargetRegistration } from '../contracts.js';
 
 export interface SandboxNetworkPolicy {
-  mode: 'custom';
-  allowedDomains: string[];
-  allowedCIDRs: string[];
-  deniedCIDRs: string[];
+  allow: string[];
+  subnets: {
+    deny: string[];
+  };
 }
 
 export const PRIVATE_RESERVED_CIDRS = [
@@ -17,10 +17,8 @@ export const PRIVATE_RESERVED_CIDRS = [
 
 export function buildSandboxNetworkPolicyForHosts(hosts: string[]): SandboxNetworkPolicy {
   return {
-    mode: 'custom',
-    allowedDomains: [...new Set(hosts.map((host) => host.toLowerCase()))],
-    allowedCIDRs: [],
-    deniedCIDRs: [...PRIVATE_RESERVED_CIDRS],
+    allow: [...new Set(hosts.map((host) => host.toLowerCase()))],
+    subnets: { deny: [...PRIVATE_RESERVED_CIDRS] },
   };
 }
 
