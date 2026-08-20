@@ -1,0 +1,94 @@
+name: gpt-action-api-final-smoke
+
+on:
+  pull_request:
+    types: [edited]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-production:
+    if: >-
+      github.actor == 'JOHNNYMACONNY' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'chatgpt/gpt-action-production-final-verify' &&
+      contains(github.event.pull_request.body || '', '[run-final-production-verify]')
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_TEAM_ID: team_3LfEMNVsAEbXKLoCrnzXQzrF
+      VERCEL_PROJECT_ID: prj_80jo2dodxOmSSvX6muUc7Tc7wIo1
+      PRODUCTION_URL: https://ual-gpt-action-api.vercel.app
+    steps:
+      - name: Require Vercel credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "${VERCEL_TOKEN:-}" ] || { echo "::error::VERCEL_TOKEN is required"; exit 1; }
+
+      - name: Load masked Production Action key
+        shell: bash
+        run: |
+          set -euo pipefail
+          api='https://api.vercel.com'
+          auth="Authorization: Bearer $VERCEL_TOKEN"
+          status=$(curl -sS -o /tmp/project-env.json -w '%{http_code}' -H "$auth" \
+            "$api/v10/projects/$VERCEL_PROJECT_ID/env?decrypt=true&teamId=$VERCEL_TEAM_ID")
+          [ "$status" = '200' ] || { echo "::error::Unable to read Vercel Production environment (HTTP $status)"; exit 1; }
+          action_key=$(jq -r '
+            [.envs[]
+              | select(
+                  .key == "UAL_ACTION_API_KEY"
+                  and ((.gitBranch // "") == "")
+                  and ((.target // []) | index("production"))
+                )
+            ]
+            | sort_by(.updatedAt // .createdAt // 0) | last
+            | .value // empty
+          ' /tmp/project-env.json)
+          [ -n "$action_key" ] || { echo "::error::Production UAL_ACTION_API_KEY was not found"; exit 1; }
+          echo "::add-mask::$action_key"
+          echo "PRODUCTION_ACTION_KEY=$action_key" >> "$GITHUB_ENV"
+          rm -f /tmp/project-env.json
+
+      - name: Verify stable Production Action end to end
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          status=$(curl -sS -o /tmp/health.json -w '%{http_code}' "$PRODUCTION_URL/health")
+          [ "$status" = '200' ] && [ "$(jq -r '.ok // false' /tmp/health.json)" = 'true' ] || { echo "::error::Health failed (HTTP $status)"; exit 1; }
+
+          status=$(curl -sS -o /tmp/openapi.json -w '%{http_code}' "$PRODUCTION_URL/openapi.json")
+          [ "$status" = '200' ] || { echo "::error::OpenAPI failed (HTTP $status)"; exit 1; }
+          [ "$(jq -r '.openapi' /tmp/openapi.json)" = '3.1.0' ] || exit 1
+          [ "$(jq -r '.servers[0].url' /tmp/openapi.json)" = "$PRODUCTION_URL" ] || exit 1
+          [ "$(jq -r '.paths["/skills/{name}"].get.operationId' /tmp/openapi.json)" = 'getCanonicalSkill' ] || exit 1
+          [ "$(jq -r '.components.schemas.SkillResponse.type' /tmp/openapi.json)" = 'object' ] || exit 1
+
+          status=$(curl -sS -o /tmp/unauthorized.json -w '%{http_code}' "$PRODUCTION_URL/skills/autonomous-dev-loop")
+          [ "$status" = '401' ] || { echo "::error::Missing bearer was not rejected (HTTP $status)"; exit 1; }
+
+          status=$(curl -sS -o /tmp/skill.json -w '%{http_code}' \
+            -H "Authorization: Bearer $PRODUCTION_ACTION_KEY" \
+            "$PRODUCTION_URL/skills/autonomous-dev-loop")
+          [ "$status" = '200' ] || { echo "::error::Authenticated canonical skill retrieval failed (HTTP $status)"; exit 1; }
+          [ "$(jq -r '.repository' /tmp/skill.json)" = 'JOHNNYMACONNY/universal-agent-loop' ] || exit 1
+          [ "$(jq -r '.ref' /tmp/skill.json)" = 'main' ] || exit 1
+          [ "$(jq -r '.path' /tmp/skill.json)" = 'skills/autonomous-dev-loop/SKILL.md' ] || exit 1
+          jq -e '.blobSha | type == "string" and length == 40' /tmp/skill.json >/dev/null || exit 1
+          jq -e '.content | contains("# Autonomous Dev Loop")' /tmp/skill.json >/dev/null || exit 1
+
+          jq -n \
+            --arg stableUrl "$PRODUCTION_URL" \
+            --arg blobSha "$(jq -r '.blobSha' /tmp/skill.json)" \
+            '{stableUrl:$stableUrl,health:true,openapi:true,unauthorizedRejected:true,canonicalSkillRetrieved:true,blobSha:$blobSha}' \
+            > gpt-action-final-smoke-evidence.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpt-action-final-smoke-${{ github.event.pull_request.head.sha }}
+          path: gpt-action-final-smoke-evidence.json
+          if-no-files-found: ignore
