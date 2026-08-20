@@ -74,6 +74,14 @@ function optionalHostList(raw: string | undefined): string[] {
   return raw?.split(',').map((value) => value.trim().toLowerCase()).filter(Boolean) ?? [];
 }
 
+function positiveRateLimit(env: Record<string, string | undefined>, name: string, fallback: number): number {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
+  return value;
+}
+
 export function createProductionRuntimeApp(env: Record<string, string | undefined> = process.env) {
   const redisUrl = required(env, 'UPSTASH_REDIS_REST_URL');
   const redisToken = required(env, 'UPSTASH_REDIS_REST_TOKEN');
@@ -92,6 +100,9 @@ export function createProductionRuntimeApp(env: Record<string, string | undefine
     ...(env.VERCEL_URL ? [env.VERCEL_URL.toLowerCase()] : []),
   ];
   if (runtimeAllowedHosts.length === 0) throw new Error('production configuration requires RUNTIME_ALLOWED_HOSTS or VERCEL_URL');
+
+  const sessionStartsPerMinute = positiveRateLimit(env, 'SESSION_STARTS_PER_MINUTE', 6);
+  const actionCallsPerMinute = positiveRateLimit(env, 'ACTION_CALLS_PER_MINUTE', 120);
 
   const redis = new Redis({ url: redisUrl, token: redisToken });
   const sessions = new UpstashSessionStore(redis as any);
@@ -117,8 +128,8 @@ export function createProductionRuntimeApp(env: Record<string, string | undefine
     limits: config.limits,
     rateLimiter,
     rateLimits: {
-      sessionStarts: Number(env.SESSION_STARTS_PER_MINUTE ?? 6),
-      actionCalls: Number(env.ACTION_CALLS_PER_MINUTE ?? 120),
+      sessionStarts: sessionStartsPerMinute,
+      actionCalls: actionCallsPerMinute,
       windowMs: 60_000,
     },
   });
