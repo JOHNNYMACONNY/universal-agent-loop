@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { runAcceptanceSequence, runRemoteAcceptanceFromEnv, type ToolCaller } from '../scripts/run-remote-acceptance.js';
+import { decodeRemoteToolResult, runAcceptanceSequence, runRemoteAcceptanceFromEnv, type ToolCaller } from '../scripts/run-remote-acceptance.js';
 
 const SHA = 'a'.repeat(40);
 
@@ -41,6 +41,25 @@ test('acceptance sequence exercises held movement, combined input, duplicate rep
   assert.equal(evidence.ended, true);
   assert.ok(calls.filter((call) => call.name === 'game_observe').length >= 3);
   assert.ok(calls.some((call) => call.name === 'game_input' && JSON.stringify(call.args).includes('pointer_move_relative')));
+});
+
+test('remote tool decoder preserves plain-text MCP validation errors', () => {
+  assert.throws(
+    () => decodeRemoteToolResult('game_session_start', {
+      isError: true,
+      content: [{ type: 'text', text: 'Input validation error: target_registration_id is too long' }],
+    }),
+    /game_session_start: Input validation error: target_registration_id is too long/,
+  );
+});
+
+test('remote tool decoder fails closed on non-JSON success payloads', () => {
+  assert.throws(
+    () => decodeRemoteToolResult('game_observe', {
+      content: [{ type: 'text', text: 'not-json' }],
+    }),
+    /game_observe: expected JSON MCP evidence/,
+  );
 });
 
 test('provider-backed remote acceptance runs only when environment is configured', { skip: !process.env.REMOTE_MCP_URL }, async () => {
