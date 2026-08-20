@@ -169,13 +169,15 @@ export class VercelSandboxBrowser implements BrowserAdapter {
   }
 
   async end(session: BrowserSessionRef): Promise<void> {
-    try {
-      const handle = await this.#factory.get(session.sandboxId);
-      if (handle.currentSessionStatus() === 'running') await this.#worker(handle, { type: 'end', session_id: session.logicalSessionId });
-      await handle.stop();
-      await handle.delete();
-    } catch {
-      // End is idempotent. A missing/dead sandbox is already ended from the caller's perspective.
+    let handle: SandboxHandle;
+    try { handle = await this.#factory.get(session.sandboxId); }
+    catch { return; }
+
+    if (handle.currentSessionStatus() === 'running') {
+      try { await this.#worker(handle, { type: 'end', session_id: session.logicalSessionId }); } catch {}
+      try { await handle.stop(); } catch {}
     }
+
+    try { await handle.delete(); } catch {}
   }
 }
