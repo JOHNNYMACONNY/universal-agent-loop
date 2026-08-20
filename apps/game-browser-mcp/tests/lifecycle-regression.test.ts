@@ -65,18 +65,9 @@ test('idle expiry fails closed and best-effort ends the remote browser', async (
 test('per-session action budget counts individual actions atomically and rejects before browser input', async () => {
   const { services, browser, sessions } = await setup({ maxActionsPerSession: 3 });
   await services.sessionStart({ target_registration_id: 'reg_1', expected_commit_sha: SHA });
-  await services.input({
-    session_id: 'session_1', action_batch_id: 'b1', expected_action_seq: 0,
-    actions: [{ type: 'press', key: 'Enter' }, { type: 'press', key: 'Enter' }],
-  });
-  await services.input({
-    session_id: 'session_1', action_batch_id: 'b2', expected_action_seq: 1,
-    actions: [{ type: 'press', key: 'Enter' }],
-  });
-  await assert.rejects(services.input({
-    session_id: 'session_1', action_batch_id: 'b3', expected_action_seq: 2,
-    actions: [{ type: 'press', key: 'Enter' }],
-  }), (error: unknown) => error instanceof RuntimeError && error.code === 'LIMIT_EXCEEDED');
+  await services.input({ session_id: 'session_1', action_batch_id: 'b1', expected_action_seq: 0, actions: [{ type: 'press', key: 'Enter' }, { type: 'press', key: 'Enter' }] });
+  await services.input({ session_id: 'session_1', action_batch_id: 'b2', expected_action_seq: 1, actions: [{ type: 'press', key: 'Enter' }] });
+  await assert.rejects(services.input({ session_id: 'session_1', action_batch_id: 'b3', expected_action_seq: 2, actions: [{ type: 'press', key: 'Enter' }] }), (error: unknown) => error instanceof RuntimeError && error.code === 'LIMIT_EXCEEDED');
   assert.equal(browser.inputCalls, 2);
   assert.equal((await sessions.get('session_1'))?.total_action_count, 3);
 });
@@ -85,10 +76,7 @@ test('reset deliberately recovers a live RECOVERY_REQUIRED session while preserv
   const browser = new FakeBrowserAdapter({ ambiguousBatchIds: ['ambiguous'] });
   const { services, sessions } = await setup({ browser });
   await services.sessionStart({ target_registration_id: 'reg_1', expected_commit_sha: SHA });
-  await assert.rejects(services.input({
-    session_id: 'session_1', action_batch_id: 'ambiguous', expected_action_seq: 0,
-    actions: [{ type: 'key_down', key: 'ArrowUp' }],
-  }), (error: unknown) => error instanceof RuntimeError && error.code === 'SESSION_RECOVERY_REQUIRED');
+  await assert.rejects(services.input({ session_id: 'session_1', action_batch_id: 'ambiguous', expected_action_seq: 0, actions: [{ type: 'key_down', key: 'ArrowUp' }] }), (error: unknown) => error instanceof RuntimeError && error.code === 'SESSION_RECOVERY_REQUIRED');
   const before = (await sessions.get('session_1'))!;
   assert.equal(before.lifecycle, 'RECOVERY_REQUIRED');
   const reset = await services.reset({ session_id: 'session_1', mode: 'target' });
@@ -108,6 +96,16 @@ test('session end is idempotent and is allowed from RECOVERY_REQUIRED without re
   assert.deepEqual(first, { session_id: 'session_1', ended: true });
   assert.deepEqual(second, { session_id: 'session_1', ended: true });
   assert.equal((await sessions.get('session_1'))?.lifecycle, 'ENDING');
+  assert.equal(browser.endCalls, 2, 'retry must re-attempt idempotent remote cleanup');
+});
+
+test('ENDING written before coordinator crash does not let retry skip remote cleanup', async () => {
+  const { services, sessions, browser } = await setup();
+  await services.sessionStart({ target_registration_id: 'reg_1', expected_commit_sha: SHA });
+  await sessions.end('session_1'); // simulate crash after durable ENDING write, before browser cleanup
+  assert.equal(browser.endCalls, 0);
+  const retry = await services.sessionEnd({ session_id: 'session_1' });
+  assert.deepEqual(retry, { session_id: 'session_1', ended: true });
   assert.equal(browser.endCalls, 1);
 });
 
