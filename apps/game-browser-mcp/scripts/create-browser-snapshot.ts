@@ -7,7 +7,7 @@ const workerUrl = new URL('../sandbox/worker.mjs', import.meta.url);
 const lockUrl = new URL('../sandbox/persistent-lock.mjs', import.meta.url);
 const [worker, persistentLock] = await Promise.all([readFile(workerUrl), readFile(lockUrl)]);
 
-const sandbox = await Sandbox.create({ runtime: 'node24', persistent: false, timeout: 20 * 60_000 } as any);
+const sandbox = await Sandbox.create({ image: 'vercel/sandbox/node:24', persistent: false, timeout: 20 * 60_000 } as any);
 try {
   const install = await sandbox.runCommand('npm', ['install', '-g', `agent-browser@${version}`]);
   if (install.exitCode !== 0) throw new Error(await install.stderr());
