@@ -53,6 +53,43 @@ test('MCP routes valid calls to tool services and returns JSON evidence', async 
   });
 });
 
+test('MCP accepts bounded signed registration capabilities larger than opaque session IDs', async () => {
+  await withClient(async (client) => {
+    const capability = `rgc1.${'a'.repeat(1500)}.${'b'.repeat(43)}`;
+    const result = await client.callTool({
+      name: 'game_session_start',
+      arguments: {
+        target_registration_id: capability,
+        expected_commit_sha: 'a'.repeat(40),
+        viewport: { width: 1280, height: 720 },
+      },
+    });
+    assert.equal(result.isError, undefined);
+    const text = result.content?.[0]?.type === 'text' ? result.content[0].text : '';
+    assert.deepEqual(JSON.parse(text), {
+      kind: 'start',
+      args: {
+        target_registration_id: capability,
+        expected_commit_sha: 'a'.repeat(40),
+        viewport: { width: 1280, height: 720 },
+      },
+    });
+  });
+});
+
+test('MCP rejects excessively large registration capability input', async () => {
+  await withClient(async (client) => {
+    const result = await client.callTool({
+      name: 'game_session_start',
+      arguments: {
+        target_registration_id: `rgc1.${'a'.repeat(5000)}.${'b'.repeat(43)}`,
+        expected_commit_sha: 'a'.repeat(40),
+      },
+    });
+    assert.equal(result.isError, true);
+  });
+});
+
 test('MCP rejects generic URL/shell/JS escape fields at schema boundary', async () => {
   await withClient(async (client) => {
     const result = await client.callTool({
