@@ -41,19 +41,20 @@ class SdkHandle implements SandboxHandle {
   async delete(): Promise<unknown> { return this.sandbox.delete(); }
 }
 
-class SdkFactory implements SandboxFactory {
+export class SdkFactory implements SandboxFactory {
   async create(options: unknown): Promise<SandboxHandle> { return new SdkHandle(await Sandbox.create(options as any)); }
-  async get(name: string): Promise<SandboxHandle> { return new SdkHandle(await Sandbox.get({ name } as any)); }
+  async get(name: string): Promise<SandboxHandle> { return new SdkHandle(await Sandbox.get({ name, resume: false } as any)); }
 }
 
 interface Options {
   factory?: SandboxFactory;
   snapshotId: string;
   timeoutMs?: number;
+  snapshotExpirationMs?: number;
   workerPath?: string;
 }
 
-function sandboxName(logicalSessionId: string): string {
+export function sandboxName(logicalSessionId: string): string {
   const safe = logicalSessionId.toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').slice(0, 80);
   return `gbr-${safe || 'session'}`;
 }
@@ -75,12 +76,14 @@ export class VercelSandboxBrowser implements BrowserAdapter {
   readonly #factory: SandboxFactory;
   readonly #snapshotId: string;
   readonly #timeoutMs: number;
+  readonly #snapshotExpirationMs: number;
   readonly #workerPath: string;
 
   constructor(options: Options) {
     this.#factory = options.factory ?? new SdkFactory();
     this.#snapshotId = options.snapshotId;
     this.#timeoutMs = options.timeoutMs ?? 15 * 60_000;
+    this.#snapshotExpirationMs = options.snapshotExpirationMs ?? 60 * 60_000;
     this.#workerPath = options.workerPath ?? '/vercel/sandbox/worker.mjs';
   }
 
@@ -88,9 +91,10 @@ export class VercelSandboxBrowser implements BrowserAdapter {
     const encoded = Buffer.from(JSON.stringify(request), 'utf8').toString('base64url');
     const result = await handle.runCommand('node', [this.#workerPath, encoded]);
     const stdout = await result.stdout();
-    if (result.exitCode !== 0) throw new Error((await result.stderr()) || 'sandbox worker failed');
-    const parsed = JSON.parse(stdout) as any;
-    if (!parsed?.ok) throw new Error(String(parsed?.error ?? 'sandbox worker rejected request'));
+    const parsed = stdout ? JSON.parse(stdout) as any : null;
+    if (result.exitCode !== 0 || !parsed?.ok) {
+      throw new Error(String(parsed?.detail ?? parsed?.error ?? (await result.stderr()) || 'sandbox worker failed'));
+    }
     return parsed;
   }
 
@@ -99,7 +103,8 @@ export class VercelSandboxBrowser implements BrowserAdapter {
     const handle = await this.#factory.create({
       name,
       source: { type: 'snapshot', snapshotId: this.#snapshotId },
-      persistent: false,
+      persistent: true,
+      snapshotExpiration: this.#snapshotExpirationMs,
       timeout: this.#timeoutMs,
       networkPolicy: buildSandboxNetworkPolicyForHosts(input.allowedHosts),
       tags: { service: 'game-browser-mcp' },
