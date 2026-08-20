@@ -1,0 +1,32 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  root:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test
+
+  game-browser-mcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/game-browser-mcp/package-lock.json
+      - run: npm ci --prefix apps/game-browser-mcp --no-audit --no-fund
+      - run: npm test --prefix apps/game-browser-mcp
+      - run: npm run typecheck --prefix apps/game-browser-mcp
+      - run: npm run build --prefix apps/game-browser-mcp

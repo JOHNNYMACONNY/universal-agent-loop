@@ -1,0 +1,50 @@
+name: game-browser-mcp-live
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_id:
+        description: Immutable Vercel deployment ID (dpl_...)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  REMOTE_EVIDENCE_PATH: apps/game-browser-mcp/remote-acceptance-evidence.json
+
+jobs:
+  remote-acceptance:
+    runs-on: ubuntu-latest
+    environment: game-browser-mcp-live
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/game-browser-mcp/package.json
+      - run: npm install --prefix apps/game-browser-mcp --no-audit --no-fund
+      - name: Register exact deployment
+        id: registration
+        run: node --import tsx apps/game-browser-mcp/scripts/register-vercel-deployment.ts
+        env:
+          REMOTE_RUNTIME_BASE_URL: ${{ secrets.REMOTE_RUNTIME_BASE_URL }}
+          VERCEL_DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+          EXPECTED_COMMIT_SHA: ${{ github.sha }}
+          REGISTRATION_CONTROL_TOKEN: ${{ secrets.REGISTRATION_CONTROL_TOKEN }}
+      - name: Run provider-backed acceptance
+        run: npm run test:remote --prefix apps/game-browser-mcp
+        env:
+          REMOTE_MCP_URL: ${{ secrets.REMOTE_RUNTIME_BASE_URL }}/mcp
+          REMOTE_MCP_BEARER_TOKEN: ${{ secrets.REMOTE_MCP_BEARER_TOKEN }}
+          TARGET_REGISTRATION_ID: ${{ steps.registration.outputs.target_registration_id }}
+          EXPECTED_COMMIT_SHA: ${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: game-browser-mcp-evidence-${{ github.sha }}
+          path: apps/game-browser-mcp/remote-acceptance-evidence.json
+          if-no-files-found: warn
+          retention-days: 7

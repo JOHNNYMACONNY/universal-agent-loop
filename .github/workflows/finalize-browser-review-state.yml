@@ -1,0 +1,46 @@
+name: finalize-browser-review-state
+
+on:
+  push:
+    branches:
+      - chatgpt/autonomous-dev-loop
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/autonomous-dev-loop
+      - name: Finalize live workflow and remove temporary helpers
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('.github/workflows/game-browser-mcp-live.yml')
+          s = p.read_text()
+          old = """      - name: Run provider-backed acceptance\n        run: npm run test:remote --prefix apps/game-browser-mcp\n        env:\n          REMOTE_MCP_URL: ${{ secrets.REMOTE_RUNTIME_BASE_URL }}/mcp\n          REMOTE_MCP_BEARER_TOKEN: ${{ secrets.REMOTE_MCP_BEARER_TOKEN }}\n          TARGET_REGISTRATION_ID: ${{ steps.registration.outputs.target_registration_id }}\n          EXPECTED_COMMIT_SHA: ${{ github.sha }}\n"""
+          new = """      - name: Mint short-lived acceptance principal\n        id: principal\n        run: node --import tsx apps/game-browser-mcp/scripts/issue-test-principal.ts\n        env:\n          OWNER_BINDING_SECRET: ${{ secrets.OWNER_BINDING_SECRET }}\n          PRINCIPAL_AUDIENCE: game-browser-mcp\n      - name: Run provider-backed acceptance\n        run: npm run test:remote --prefix apps/game-browser-mcp\n        env:\n          REMOTE_MCP_URL: ${{ secrets.REMOTE_RUNTIME_BASE_URL }}/mcp\n          REMOTE_MCP_BEARER_TOKEN: ${{ steps.principal.outputs.bearer_token }}\n          TARGET_REGISTRATION_ID: ${{ steps.registration.outputs.target_registration_id }}\n          EXPECTED_COMMIT_SHA: ${{ github.sha }}\n"""
+          if old in s:
+              s = s.replace(old, new)
+          elif 'Mint short-lived acceptance principal' not in s:
+              raise SystemExit('live workflow acceptance anchor missing')
+          p.write_text(s)
+          PY
+          rm -f .github/workflows/apply-browser-security-review-repair.yml \
+                .github/workflows/cleanup-browser-security-review-helper.yml \
+                .github/workflows/finalize-browser-review-state.yml
+      - name: Commit final review state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A .github/workflows
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "ci: finalize locked live browser acceptance"
+          git push origin HEAD:chatgpt/autonomous-dev-loop
