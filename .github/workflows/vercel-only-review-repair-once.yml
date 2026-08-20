@@ -1,0 +1,132 @@
+name: vercel-only-review-repair-once
+
+on:
+  push:
+    branches: [chatgpt/autonomous-dev-loop]
+    paths:
+      - .github/workflows/vercel-only-review-repair-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/autonomous-dev-loop
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Apply reviewed recovery fixes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          worker_path = Path('apps/game-browser-mcp/sandbox/worker.mjs')
+          worker = worker_path.read_text()
+          needle = "import { spawnSync } from 'node:child_process';\n"
+          if "persistent-lock.mjs" not in worker:
+              worker = worker.replace(needle, needle + "import { withPersistentLock } from './persistent-lock.mjs';\n")
+          worker = re.sub(
+              r"function sleep\(ms\) \{ Atomics\.wait\(new Int32Array\(new SharedArrayBuffer\(4\)\), 0, 0, ms\); \}\nfunction withLock\(fn\) \{[\s\S]*?\n\}\nfunction workerError",
+              "function workerError",
+              worker,
+              count=1,
+          )
+          worker = worker.replace("try { withLock(dispatch); }", "try { withPersistentLock(lockPath, dispatch); }")
+          worker_path.write_text(worker)
+
+          tools_path = Path('apps/game-browser-mcp/src/tools/index.ts')
+          tools = tools_path.read_text()
+          old = '''  async function sessionEnd(rawInput: unknown) {
+    const input = SessionSchema.parse(rawInput);
+    const owned = await ownedRecord(input.session_id);
+    if (owned.session.lifecycle === 'ENDING') return { session_id: input.session_id, ended: true };
+    await deps.sessions.end(input.session_id);
+    try { await deps.browser.releaseHeldInput(owned.ref); } catch {}
+    try { await deps.sessions.updateHeldInput(input.session_id, [], []); } catch {}
+    try { await deps.browser.end(owned.ref); } catch {}
+    return { session_id: input.session_id, ended: true };
+  }
+'''
+          new = '''  async function sessionEnd(rawInput: unknown) {
+    const input = SessionSchema.parse(rawInput);
+    let owned: { session: SessionRecord; ref: BrowserSessionRef };
+    try {
+      owned = await ownedRecord(input.session_id);
+    } catch (error) {
+      // End is deliberately idempotent. A valid authenticated caller learns no existence
+      // information from an already-deleted/expired session; it is simply already ended.
+      if (error instanceof RuntimeError && (error.code === 'SESSION_NOT_FOUND' || error.code === 'SESSION_EXPIRED')) {
+        return { session_id: input.session_id, ended: true };
+      }
+      throw error;
+    }
+    if (owned.session.lifecycle !== 'ENDING') await deps.sessions.end(input.session_id);
+    try { await deps.browser.releaseHeldInput(owned.ref); } catch {}
+    try { await deps.sessions.updateHeldInput(input.session_id, [], []); } catch {}
+    try { await deps.browser.end(owned.ref); } catch {}
+    return { session_id: input.session_id, ended: true };
+  }
+'''
+          if old not in tools:
+              raise SystemExit('sessionEnd source pattern not found')
+          tools_path.write_text(tools.replace(old, new))
+
+          browser_path = Path('apps/game-browser-mcp/src/browser/vercel-sandbox-browser.ts')
+          browser = browser_path.read_text()
+          old = '''  async end(session: BrowserSessionRef): Promise<void> {
+    try {
+      const handle = await this.#factory.get(session.sandboxId);
+      if (handle.currentSessionStatus() === 'running') await this.#worker(handle, { type: 'end', session_id: session.logicalSessionId });
+      await handle.stop();
+      await handle.delete();
+    } catch {
+      // End is idempotent. A missing/dead sandbox is already ended from the caller's perspective.
+    }
+  }
+'''
+          new = '''  async end(session: BrowserSessionRef): Promise<void> {
+    let handle: SandboxHandle;
+    try { handle = await this.#factory.get(session.sandboxId); }
+    catch { return; }
+    if (handle.currentSessionStatus() === 'running') {
+      try { await this.#worker(handle, { type: 'end', session_id: session.logicalSessionId }); } catch {}
+      try { await handle.stop(); } catch {}
+    }
+    try { await handle.delete(); } catch {}
+  }
+'''
+          if old not in browser:
+              raise SystemExit('browser end source pattern not found')
+          browser_path.write_text(browser.replace(old, new))
+
+          snapshot_path = Path('apps/game-browser-mcp/scripts/create-browser-snapshot.ts')
+          snapshot = snapshot_path.read_text()
+          snapshot = snapshot.replace(
+              "const workerUrl = new URL('../sandbox/worker.mjs', import.meta.url);\nconst worker = await readFile(workerUrl);",
+              "const workerUrl = new URL('../sandbox/worker.mjs', import.meta.url);\nconst lockUrl = new URL('../sandbox/persistent-lock.mjs', import.meta.url);\nconst [worker, persistentLock] = await Promise.all([readFile(workerUrl), readFile(lockUrl)]);",
+          )
+          snapshot = snapshot.replace(
+              "await sandbox.writeFiles([{ path: '/vercel/sandbox/worker.mjs', content: worker, mode: 0o755 }]);",
+              "await sandbox.writeFiles([\n    { path: '/vercel/sandbox/worker.mjs', content: worker, mode: 0o755 },\n    { path: '/vercel/sandbox/persistent-lock.mjs', content: persistentLock, mode: 0o644 },\n  ]);",
+          )
+          snapshot_path.write_text(snapshot)
+          PY
+      - name: Verify repair before commit
+        run: |
+          npm ci --prefix apps/game-browser-mcp --no-audit --no-fund
+          npm test --prefix apps/game-browser-mcp
+          npm run typecheck --prefix apps/game-browser-mcp
+          npm run build --prefix apps/game-browser-mcp
+          npm test
+      - name: Commit repair
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add apps/game-browser-mcp
+          git commit -m "fix: harden persistent sandbox recovery"
+          git push origin HEAD:chatgpt/autonomous-dev-loop
