@@ -180,10 +180,7 @@ jobs:
           }
 
           waf_http=$(inspect_waf)
-          if is_platform_limit "$waf_http" /tmp/waf-config.json; then
-            waf_status="platform_limited"
-            limitation_reason="Vercel WAF rate limiting is unavailable on the current plan; no billing change was authorized or attempted."
-          elif [ "$waf_http" = "200" ] && verify_waf; then
+          if [ "$waf_http" = "200" ] && verify_waf; then
             waf_status="configured"
           elif [ "$waf_http" = "200" ] && has_named_active_rule; then
             echo "::error::Existing active Vercel WAF rule has the required name but its condition or rate-limit configuration has drifted"
@@ -223,6 +220,9 @@ jobs:
               fi
               waf_status="configured"
             fi
+          elif is_platform_limit "$waf_http" /tmp/waf-config.json; then
+            waf_status="platform_limited"
+            limitation_reason="Vercel WAF rate limiting is unavailable on the current plan; no billing change was authorized or attempted."
           else
             echo "::error::Unable to inspect Vercel Firewall configuration (HTTP $waf_http)"
             exit 1
