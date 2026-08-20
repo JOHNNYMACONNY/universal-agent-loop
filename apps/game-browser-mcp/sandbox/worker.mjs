@@ -56,6 +56,23 @@ function ab(args, { allowFailure = false } = {}) {
   }
   return parsed?.data ?? parsed;
 }
+function objectValue(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+function stringField(value, key) {
+  if (typeof value === 'string') return value;
+  const record = objectValue(value);
+  return typeof record?.[key] === 'string' ? record[key] : '';
+}
+function arrayField(value, key) {
+  if (Array.isArray(value)) return value;
+  const record = objectValue(value);
+  return Array.isArray(record?.[key]) ? record[key] : [];
+}
+function resultField(value) {
+  const record = objectValue(value);
+  return record && Object.prototype.hasOwnProperty.call(record, 'result') ? record.result : value;
+}
 function held(ledger) {
   return { heldKeys: [...ledger.heldKeys], heldPointerButtons: [...ledger.heldPointerButtons] };
 }
@@ -67,25 +84,21 @@ function release(ledger) {
   ledger.heldPointerButtons = [];
   save(ledger);
 }
-function dataString(value) { return typeof value === 'string' ? value : JSON.stringify(value ?? ''); }
 function observe(ledger) {
-  const url = dataString(ab(['get', 'url']));
-  const title = dataString(ab(['get', 'title'], { allowFailure: true }));
-  const accessibilitySnapshot = dataString(ab(['snapshot'], { allowFailure: true }));
-  const consoleErrors = ab(['console'], { allowFailure: true }) ?? [];
-  const pageErrors = ab(['errors'], { allowFailure: true }) ?? [];
-  const requests = ab(['network', 'requests'], { allowFailure: true }) ?? [];
+  const url = stringField(ab(['get', 'url']), 'url');
+  const title = stringField(ab(['get', 'title'], { allowFailure: true }), 'title');
+  const accessibilitySnapshot = stringField(ab(['snapshot'], { allowFailure: true }), 'snapshot');
+  const consoleErrors = arrayField(ab(['console'], { allowFailure: true }), 'messages');
+  const pageErrors = arrayField(ab(['errors'], { allowFailure: true }), 'errors');
+  const requests = arrayField(ab(['network', 'requests'], { allowFailure: true }), 'requests');
   const shotPath = `${root}/${session}-latest.png`;
   ab(['screenshot', shotPath], { allowFailure: true });
   let screenshot;
   try { screenshot = { base64: readFileSync(shotPath).toString('base64') }; } catch {}
   return {
     url, title, accessibilitySnapshot,
-    consoleErrors: [
-      ...(Array.isArray(consoleErrors) ? consoleErrors : [consoleErrors]),
-      ...(Array.isArray(pageErrors) ? pageErrors : [pageErrors]),
-    ],
-    failedRequests: Array.isArray(requests) ? requests.filter((item) => item?.failed || item?.status >= 400) : [],
+    consoleErrors: [...consoleErrors, ...pageErrors],
+    failedRequests: requests.filter((item) => item?.failed || item?.status >= 400),
     ...(screenshot ? { screenshot } : {}),
     capturedAt: new Date().toISOString(),
     ...held(ledger),
@@ -229,7 +242,7 @@ function dispatch() {
   if (request.type === 'read_state') {
     const path = request.path ?? '';
     const source = `(() => { const p=${JSON.stringify(path)}; let v=window.__GAME_TEST__; if (p) for (const raw of p.split('/').slice(1)) { const k=raw.replace(/~1/g,'/').replace(/~0/g,'~'); if (v==null || typeof v!=='object') return null; v=v[k]; } return JSON.parse(JSON.stringify(v ?? null)); })()`;
-    const value = ab(['eval', '-b', Buffer.from(source).toString('base64')], { allowFailure: true });
+    const value = resultField(ab(['eval', '-b', Buffer.from(source).toString('base64')], { allowFailure: true }));
     output({ value });
     return;
   }
