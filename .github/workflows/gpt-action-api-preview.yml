@@ -143,7 +143,7 @@ jobs:
           set -euo pipefail
           export VERCEL_PROJECT_ID="$VERCEL_PROJECT_ID"
           deployment_url=$(npx -y vercel@59.1.4 deploy --yes --token "$VERCEL_TOKEN" --scope "$VERCEL_TEAM_SLUG" \
-            --cwd "$GITHUB_WORKSPACE/apps/gpt-action-api" | tail -n 1)
+            --cwd "$GITHUB_WORKSPACE" | tail -n 1)
           if [[ ! "$deployment_url" =~ ^https://[A-Za-z0-9.-]+\.vercel\.app$ ]]; then
             echo "::error::Vercel CLI did not return a preview URL"
             exit 1
