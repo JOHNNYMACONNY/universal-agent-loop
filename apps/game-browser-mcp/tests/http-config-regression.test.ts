@@ -36,9 +36,13 @@ test('MCP HTTP surface rejects oversized JSON before tool execution', async () =
 });
 
 test('production composition rejects invalid rate-limit configuration at startup', () => {
-  for (const [name, value] of [
-    ['SESSION_STARTS_PER_MINUTE', '0'], ['ACTION_CALLS_PER_MINUTE', '-1'], ['ACTION_CALLS_PER_MINUTE', 'NaN'],
-  ]) {
+  const invalidCases = [
+    ['SESSION_STARTS_PER_MINUTE', '0'],
+    ['ACTION_CALLS_PER_MINUTE', '-1'],
+    ['ACTION_CALLS_PER_MINUTE', 'NaN'],
+  ] as const;
+
+  for (const [name, value] of invalidCases) {
     assert.throws(() => createProductionRuntimeApp({ ...BASE_ENV, [name]: value }), new RegExp(name));
   }
 });
