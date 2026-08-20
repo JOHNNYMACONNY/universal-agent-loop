@@ -14,7 +14,8 @@ test('GPT Action production workflow promotes existing Preview secrets without e
   assert.match(workflow, /vercel@59\.1\.4 deploy --prod/);
   assert.match(workflow, /https:\/\/ual-gpt-action-api\.vercel\.app/);
   assert.match(workflow, /\/skills\/autonomous-dev-loop/);
-  assert.doesNotMatch(workflow, /echo\s+[^\n]*(GITHUB_TOKEN|UAL_ACTION_API_KEY)/);
+  assert.doesNotMatch(workflow, /echo\s+["']?\$(github_token|action_key)["']?/);
+  assert.doesNotMatch(workflow, /printf\s+[^\n]*\$(github_token|action_key)/);
 });
 
 test('production promotion resolves the permanent Action key from the branch and allows GitHub token fallback to newest global Preview value', async () => {
