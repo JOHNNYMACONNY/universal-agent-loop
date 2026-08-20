@@ -91,9 +91,12 @@ export class VercelSandboxBrowser implements BrowserAdapter {
     const encoded = Buffer.from(JSON.stringify(request), 'utf8').toString('base64url');
     const result = await handle.runCommand('node', [this.#workerPath, encoded]);
     const stdout = await result.stdout();
-    const parsed = stdout ? JSON.parse(stdout) as any : null;
+    let parsed: any = null;
+    try { parsed = stdout ? JSON.parse(stdout) : null; } catch {}
     if (result.exitCode !== 0 || !parsed?.ok) {
-      throw new Error(String(parsed?.detail ?? parsed?.error ?? (await result.stderr()) || 'sandbox worker failed'));
+      const stderr = await result.stderr();
+      const message = parsed?.detail ?? parsed?.error ?? (stderr || 'sandbox worker failed');
+      throw new Error(String(message));
     }
     return parsed;
   }
