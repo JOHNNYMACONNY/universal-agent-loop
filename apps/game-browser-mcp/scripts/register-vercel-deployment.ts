@@ -72,12 +72,13 @@ async function main(): Promise<void> {
     throw new Error('REMOTE_RUNTIME_BASE_URL, VERCEL_DEPLOYMENT_ID, EXPECTED_COMMIT_SHA/GITHUB_SHA, and REGISTRATION_CONTROL_TOKEN are required');
   }
   const result = await registerRemoteDeployment({ runtimeBaseUrl, deploymentId, commitSha, controlToken });
+  process.stdout.write(`::add-mask::${result.targetRegistrationId}\n`);
   if (process.env.GITHUB_OUTPUT) {
     await appendFile(process.env.GITHUB_OUTPUT, `target_registration_id=${result.targetRegistrationId}\n`, 'utf8');
     await appendFile(process.env.GITHUB_OUTPUT, `deployment_id=${result.deploymentId}\n`, 'utf8');
     await appendFile(process.env.GITHUB_OUTPUT, `deployment_url=${result.deploymentUrl}\n`, 'utf8');
   }
-  process.stdout.write(`${JSON.stringify({ ok: true, targetRegistrationId: result.targetRegistrationId, deploymentId: result.deploymentId, commit: result.expectedCommitSha })}\n`);
+  process.stdout.write(`${JSON.stringify({ ok: true, deploymentId: result.deploymentId, commit: result.expectedCommitSha })}\n`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
