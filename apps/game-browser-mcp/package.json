@@ -17,7 +17,6 @@
     "@modelcontextprotocol/express": "2.0.0",
     "@modelcontextprotocol/node": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
-    "@upstash/redis": "1.38.2",
     "@vercel/sandbox": "3.0.0",
     "express": "5.2.1",
     "zod": "4.4.3"
