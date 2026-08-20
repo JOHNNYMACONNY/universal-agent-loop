@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: game-browser-mcp-bootstrap
+  cancel-in-progress: false
+
 jobs:
   bootstrap-and-accept:
     if: >-
@@ -138,6 +142,99 @@ jobs:
 
           echo "project_id=$project_id" >> "$GITHUB_OUTPUT"
           echo "VERCEL_PROJECT_ID=$project_id" >> "$GITHUB_ENV"
+
+      - name: Configure or record coarse MCP rate limit
+        id: waf
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          api="https://api.vercel.com"
+          auth="Authorization: Bearer $VERCEL_TOKEN"
+          rule_name="ual-game-browser-mcp-rate-600-per-60s-ip"
+          metadata="$GITHUB_WORKSPACE/apps/game-browser-mcp/runtime-completion-metadata.json"
+          waf_status=""
+          limitation_reason=""
+
+          is_platform_limit() {
+            local http_status="$1" file="$2"
+            if [ "$http_status" = "402" ]; then return 0; fi
+            grep -Eqi '(rate.?limit[^[:cntrl:]]*(pro|enterprise)|(pro|enterprise)[^[:cntrl:]]*(required|plan|available)|upgrade[^[:cntrl:]]*(pro|plan)|not available[^[:cntrl:]]*(current )?plan)' "$file" 2>/dev/null
+          }
+
+          inspect_waf() {
+            curl -sS -o /tmp/waf-config.json -w '%{http_code}' \
+              -H "$auth" \
+              "$api/v1/security/firewall/config?projectId=$VERCEL_PROJECT_ID&teamId=$VERCEL_TEAM_ID"
+          }
+
+          waf_http=$(inspect_waf)
+          if [ "$waf_http" = "200" ] && jq -e --arg name "$rule_name" '.active.rules // [] | any(.name == $name)' /tmp/waf-config.json >/dev/null; then
+            waf_status="configured"
+          elif is_platform_limit "$waf_http" /tmp/waf-config.json; then
+            waf_status="platform_limited"
+            limitation_reason="Vercel WAF rate limiting is unavailable on the current plan; no billing change was authorized or attempted."
+          elif [ "$waf_http" = "200" ] || [ "$waf_http" = "404" ]; then
+            export VERCEL_ORG_ID="$VERCEL_TEAM_ID"
+            export VERCEL_PROJECT_ID="$VERCEL_PROJECT_ID"
+            set +e
+            npx -y vercel@59.1.4 firewall rules add "$rule_name" \
+              --condition '{"type":"path","op":"pre","value":"/mcp"}' \
+              --action rate_limit \
+              --rate-limit-window 60 \
+              --rate-limit-requests 600 \
+              --rate-limit-keys ip \
+              --rate-limit-algo fixed_window \
+              --rate-limit-action rate_limit \
+              --description 'Coarse abuse limit for the remote MCP surface' \
+              --yes --token "$VERCEL_TOKEN" --scope "$VERCEL_TEAM_SLUG" \
+              >/tmp/waf-add.log 2>&1
+            add_status=$?
+            set -e
+            if [ "$add_status" -ne 0 ]; then
+              if is_platform_limit "0" /tmp/waf-add.log; then
+                waf_status="platform_limited"
+                limitation_reason="Vercel WAF rate limiting is unavailable on the current plan; no billing change was authorized or attempted."
+              else
+                echo "::error::Unable to configure required Vercel coarse MCP rate limit"
+                exit 1
+              fi
+            else
+              npx -y vercel@59.1.4 firewall publish --yes --token "$VERCEL_TOKEN" --scope "$VERCEL_TEAM_SLUG" \
+                >/tmp/waf-publish.log 2>&1
+              verify_http=$(inspect_waf)
+              if [ "$verify_http" != "200" ] || ! jq -e --arg name "$rule_name" '.active.rules // [] | any(.name == $name)' /tmp/waf-config.json >/dev/null; then
+                echo "::error::Vercel coarse MCP rate limit was not visible in the active firewall configuration after publish"
+                exit 1
+              fi
+              waf_status="configured"
+            fi
+          else
+            echo "::error::Unable to inspect Vercel Firewall configuration (HTTP $waf_http)"
+            exit 1
+          fi
+
+          jq -n \
+            --arg expectedCommitSha "$CANDIDATE_SHA" \
+            --arg status "$waf_status" \
+            --arg ruleName "$rule_name" \
+            --arg limitationReason "$limitation_reason" \
+            '{
+              expectedCommitSha:$expectedCommitSha,
+              coarseRateLimit:{
+                provider:"vercel-waf",
+                status:$status,
+                ruleName:$ruleName,
+                pathPrefix:"/mcp",
+                windowSeconds:60,
+                requestsPerWindow:600,
+                key:"ip",
+                algorithm:"fixed_window",
+                limitationReason:(if $limitationReason == "" then null else $limitationReason end)
+              }
+            }' > "$metadata"
+          echo "waf_status=$waf_status" >> "$GITHUB_OUTPUT"
 
       - name: Generate ephemeral runtime bootstrap secrets
         id: secrets
@@ -336,6 +433,8 @@ jobs:
         if: always()
         with:
           name: game-browser-mcp-live-${{ steps.candidate.outputs.sha }}
-          path: apps/game-browser-mcp/remote-acceptance-evidence.json
+          path: |
+            apps/game-browser-mcp/remote-acceptance-evidence.json
+            apps/game-browser-mcp/runtime-completion-metadata.json
           if-no-files-found: warn
           retention-days: 7
