@@ -95,19 +95,7 @@ function openApiSchema(request, env) {
               description: 'Current canonical skill.',
               content: {
                 'application/json': {
-                  schema: {
-                    type: 'object',
-                    required: ['name', 'repository', 'ref', 'path', 'blobSha', 'content', 'sourceUrl'],
-                    properties: {
-                      name: { type: 'string' },
-                      repository: { type: 'string' },
-                      ref: { type: 'string' },
-                      path: { type: 'string' },
-                      blobSha: { type: 'string' },
-                      content: { type: 'string' },
-                      sourceUrl: { type: 'string', format: 'uri' },
-                    },
-                  },
+                  schema: { $ref: '#/components/schemas/SkillResponse' },
                 },
               },
             },
@@ -121,6 +109,21 @@ function openApiSchema(request, env) {
       },
     },
     components: {
+      schemas: {
+        SkillResponse: {
+          type: 'object',
+          required: ['name', 'repository', 'ref', 'path', 'blobSha', 'content', 'sourceUrl'],
+          properties: {
+            name: { type: 'string' },
+            repository: { type: 'string' },
+            ref: { type: 'string' },
+            path: { type: 'string' },
+            blobSha: { type: 'string' },
+            content: { type: 'string' },
+            sourceUrl: { type: 'string', format: 'uri' },
+          },
+        },
+      },
       securitySchemes: {
         bearerAuth: { type: 'http', scheme: 'bearer' },
       },
