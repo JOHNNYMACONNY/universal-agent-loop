@@ -1,0 +1,113 @@
+name: game-browser-sandbox-diagnostic
+
+on:
+  push:
+    branches: [chatgpt/autonomous-dev-loop]
+    paths:
+      - .github/workflows/game-browser-sandbox-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  isolate-create:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      VERCEL_TEAM_ID: team_3LfEMNVsAEbXKLoCrnzXQzrF
+      VERCEL_PROJECT_ID: prj_bU062HqgwiUYUtMuX4nRN0GpXRd9
+      SNAPSHOT_ID: snap_6JZJiQDTjUpWSVmqRwDKWuDufrsK
+      PROBE_HOST: ual-game-browser-m0jklu2h2-johnny-maconnys-projects.vercel.app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/game-browser-mcp/package-lock.json
+      - run: npm ci --prefix apps/game-browser-mcp --no-audit --no-fund
+      - name: Require bootstrap token
+        shell: bash
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${VERCEL_TOKEN:-}"
+      - name: Mint project OIDC
+        id: oidc
+        shell: bash
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          status=$(curl -sS -o /tmp/oidc.json -w '%{http_code}' \
+            -X POST "https://api.vercel.com/v1/projects/$VERCEL_PROJECT_ID/token?teamId=$VERCEL_TEAM_ID" \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H 'Content-Type: application/json' \
+            --data '{"source":"github-actions:game-browser-sandbox-diagnostic"}')
+          test "$status" = "200"
+          token=$(jq -r '.token // empty' /tmp/oidc.json)
+          test -n "$token"
+          echo "::add-mask::$token"
+          echo "VERCEL_OIDC_TOKEN=$token" >> "$GITHUB_ENV"
+      - name: Bisect Sandbox.create configuration
+        working-directory: apps/game-browser-mcp
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { Sandbox } from '@vercel/sandbox';
+
+          const snapshotId = process.env.SNAPSHOT_ID;
+          const host = process.env.PROBE_HOST;
+          const run = process.env.GITHUB_RUN_ID;
+          const ipv4Deny = [
+            '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
+            '169.254.0.0/16', '172.16.0.0/12', '192.0.0.0/24', '192.0.2.0/24',
+            '192.168.0.0/16', '198.18.0.0/15', '198.51.100.0/24', '203.0.113.0/24',
+            '224.0.0.0/4', '240.0.0.0/4',
+          ];
+
+          function diagnostic(error) {
+            const status = error?.response?.status;
+            const json = error?.json;
+            const nested = json?.error;
+            const code = typeof nested === 'object' ? nested?.code : json?.code;
+            const message = typeof nested === 'object' ? nested?.message : (typeof nested === 'string' ? nested : json?.message);
+            return [status && `HTTP ${status}`, code && `[${String(code).slice(0,80)}]`, message && String(message).replace(/\s+/g,' ').slice(0,240)].filter(Boolean).join(' ');
+          }
+
+          async function cleanup(name, sandbox) {
+            try { if (sandbox?.currentSession()?.status === 'running') await sandbox.stop(); } catch {}
+            try { await sandbox?.delete(); } catch {}
+            if (!sandbox) {
+              try {
+                const stale = await Sandbox.get({ name, resume: false });
+                try { if (stale.currentSession()?.status === 'running') await stale.stop(); } catch {}
+                try { await stale.delete(); } catch {}
+              } catch {}
+            }
+          }
+
+          async function probe(label, options) {
+            const name = `diag-${run}-${label}`.toLowerCase().slice(0, 90);
+            let sandbox;
+            try {
+              sandbox = await Sandbox.create({ name, ...options });
+              console.log(`PROBE ${label}: PASS`);
+              return true;
+            } catch (error) {
+              console.log(`PROBE ${label}: FAIL ${diagnostic(error) || 'no-provider-diagnostic'}`);
+              return false;
+            } finally {
+              await cleanup(name, sandbox);
+            }
+          }
+
+          const base = { source: { type: 'snapshot', snapshotId } };
+          await probe('a-snapshot', { ...base, persistent: false });
+          await probe('b-persistent', { ...base, persistent: true, snapshotExpiration: 86_400_000 });
+          await probe('c-timeout-tags', { ...base, persistent: true, snapshotExpiration: 86_400_000, timeout: 900_000, tags: { service: 'game-browser-mcp' } });
+          await probe('d-domain-policy', { ...base, persistent: true, snapshotExpiration: 86_400_000, timeout: 900_000, tags: { service: 'game-browser-mcp' }, networkPolicy: { allow: [host] } });
+          await probe('e-subnet-policy', { ...base, persistent: true, snapshotExpiration: 86_400_000, timeout: 900_000, tags: { service: 'game-browser-mcp' }, networkPolicy: { allow: [host], subnets: { deny: ipv4Deny } } });
+          NODE
