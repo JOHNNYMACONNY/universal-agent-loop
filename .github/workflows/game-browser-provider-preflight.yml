@@ -1,0 +1,40 @@
+name: game-browser-provider-preflight
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provider-preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report credential availability only
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          REMOTE_RUNTIME_BASE_URL: ${{ secrets.REMOTE_RUNTIME_BASE_URL }}
+          REGISTRATION_CONTROL_TOKEN: ${{ secrets.REGISTRATION_CONTROL_TOKEN }}
+          REMOTE_MCP_BEARER_TOKEN: ${{ secrets.REMOTE_MCP_BEARER_TOKEN }}
+          OWNER_BINDING_SECRET: ${{ secrets.OWNER_BINDING_SECRET }}
+          AGENT_BROWSER_SNAPSHOT_ID: ${{ secrets.AGENT_BROWSER_SNAPSHOT_ID }}
+        run: |
+          for name in \
+            VERCEL_TOKEN \
+            UPSTASH_REDIS_REST_URL \
+            UPSTASH_REDIS_REST_TOKEN \
+            REMOTE_RUNTIME_BASE_URL \
+            REGISTRATION_CONTROL_TOKEN \
+            REMOTE_MCP_BEARER_TOKEN \
+            OWNER_BINDING_SECRET \
+            AGENT_BROWSER_SNAPSHOT_ID
+          do
+            if [ -n "$(printenv "$name")" ]; then
+              printf '%s=SET\n' "$name"
+            else
+              printf '%s=UNSET\n' "$name"
+            fi
+          done
