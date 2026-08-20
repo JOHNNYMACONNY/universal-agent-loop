@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 
 const OWNER_FILE = 'owner.json';
 const ORPHAN_GRACE_MS = 1_000;
@@ -33,9 +33,16 @@ function lockAgeMs(lockPath) {
   catch { return Number.POSITIVE_INFINITY; }
 }
 
+function processExists(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error?.code === 'EPERM'; }
+}
+
 function ownerIsAlive(owner) {
-  if (!owner || owner.bootId !== BOOT_ID || !Number.isInteger(owner.pid) || typeof owner.processStart !== 'string') return false;
-  return readProcessStart(owner.pid) === owner.processStart;
+  if (!owner || owner.bootId !== BOOT_ID || !Number.isInteger(owner.pid)) return false;
+  const currentStart = readProcessStart(owner.pid);
+  if (typeof owner.processStart === 'string' && currentStart !== null) return currentStart === owner.processStart;
+  return processExists(owner.pid);
 }
 
 function mayReclaim(lockPath) {
@@ -58,7 +65,7 @@ export function withPersistentLock(lockPath, fn, options = {}) {
     token,
     pid: process.pid,
     bootId: BOOT_ID,
-    processStart: readProcessStart(process.pid) ?? `pid-${process.pid}`,
+    processStart: readProcessStart(process.pid),
     acquiredAt: new Date().toISOString(),
   };
 
