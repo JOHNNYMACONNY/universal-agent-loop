@@ -9,13 +9,23 @@ test('GPT Action production workflow promotes existing Preview secrets without e
 
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /decrypt=true/);
-  assert.match(workflow, /gitBranch=/);
   assert.match(workflow, /::add-mask::/);
   assert.match(workflow, /target:\["production"\]/);
   assert.match(workflow, /vercel@59\.1\.4 deploy --prod/);
   assert.match(workflow, /https:\/\/ual-gpt-action-api\.vercel\.app/);
   assert.match(workflow, /\/skills\/autonomous-dev-loop/);
   assert.doesNotMatch(workflow, /echo\s+[^\n]*(GITHUB_TOKEN|UAL_ACTION_API_KEY)/);
+});
+
+test('production promotion resolves the permanent Action key from the branch and allows GitHub token fallback to newest global Preview value', async () => {
+  const workflow = await readFile(workflowUrl, 'utf8');
+
+  assert.match(workflow, /branch_value\(\)/);
+  assert.match(workflow, /global_preview_value\(\)/);
+  assert.match(workflow, /sort_by\(\.updatedAt \/\/ \.createdAt \/\/ 0\) \| last/);
+  assert.match(workflow, /branch_value UAL_ACTION_API_KEY/);
+  assert.match(workflow, /branch_value GITHUB_TOKEN/);
+  assert.match(workflow, /global_preview_value GITHUB_TOKEN/);
 });
 
 test('one-shot production trigger only runs on the exact authorized merge message', async () => {
