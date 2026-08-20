@@ -20,6 +20,7 @@ jobs:
     env:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_TEAM_ID: team_3LfEMNVsAEbXKLoCrnzXQzrF
+      VERCEL_TEAM_SLUG: johnny-maconnys-projects
       VERCEL_PROJECT_NAME: ual-game-browser-mcp
       TARGET_REPOSITORY_OWNER: JOHNNYMACONNY
       TARGET_REPOSITORY_NAME: universal-agent-loop
@@ -82,10 +83,9 @@ jobs:
               --arg repo "$TARGET_REPOSITORY_OWNER/$TARGET_REPOSITORY_NAME" \
               '{
                 name:$name,
-                framework:null,
+                framework:"express",
                 rootDirectory:"apps/game-browser-mcp",
                 installCommand:"npm ci --no-audit --no-fund",
-                buildCommand:"npm run build",
                 previewDeploymentsDisabled:false,
                 publicSource:false,
                 ssoProtection:null,
@@ -105,6 +105,37 @@ jobs:
             echo "::error::Vercel project response did not contain a project ID"
             exit 1
           fi
+
+          settings=$(jq -n '{
+            framework:"express",
+            buildCommand:null,
+            outputDirectory:null,
+            previewDeploymentsDisabled:false,
+            ssoProtection:null,
+            passwordProtection:null,
+            trustedIps:null
+          }')
+          settings_status=$(curl -sS -o /tmp/project-settings.json -w '%{http_code}' \
+            -X PATCH "$api/v9/projects/$project_id?teamId=$VERCEL_TEAM_ID" \
+            -H "$auth" -H 'Content-Type: application/json' --data "$settings")
+          if [ "$settings_status" != "200" ]; then
+            echo "::error::Unable to normalize dedicated Vercel project settings (HTTP $settings_status)"
+            jq -r '.error.code // empty, .error.message // empty' /tmp/project-settings.json || true
+            exit 1
+          fi
+          if [ "$(jq -r '.framework // empty' /tmp/project-settings.json)" != "express" ]; then
+            echo "::error::Dedicated Vercel project did not accept the Express framework preset"
+            exit 1
+          fi
+          if [ "$(jq -r 'if .buildCommand == null then "AUTO" else .buildCommand end' /tmp/project-settings.json)" != "AUTO" ]; then
+            echo "::error::Dedicated Vercel project build command is not auto-detected"
+            exit 1
+          fi
+          if [ "$(jq -r 'if .outputDirectory == null then "AUTO" else .outputDirectory end' /tmp/project-settings.json)" != "AUTO" ]; then
+            echo "::error::Dedicated Vercel project output directory is not auto-detected"
+            exit 1
+          fi
+
           echo "project_id=$project_id" >> "$GITHUB_OUTPUT"
           echo "VERCEL_PROJECT_ID=$project_id" >> "$GITHUB_ENV"
 
@@ -205,61 +236,59 @@ jobs:
             exit 1
           fi
 
-      - name: Create exact-commit Git-source preview deployment
+      - name: Create exact-commit preview deployment
         id: deploy
         shell: bash
+        working-directory: apps/game-browser-mcp
         env:
           CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+          VERCEL_ORG_ID: ${{ env.VERCEL_TEAM_ID }}
         run: |
           set -euo pipefail
-          body=$(jq -n \
-            --arg name "$VERCEL_PROJECT_NAME" \
-            --arg project "$VERCEL_PROJECT_ID" \
-            --arg org "$TARGET_REPOSITORY_OWNER" \
-            --arg repo "$TARGET_REPOSITORY_NAME" \
-            --arg ref "$TARGET_BRANCH" \
-            --arg sha "$CANDIDATE_SHA" \
-            '{name:$name,project:$project,gitSource:{type:"github",org:$org,repo:$repo,ref:$ref,sha:$sha}}')
-          status=$(curl -sS -o /tmp/deploy.json -w '%{http_code}' \
-            -X POST "https://api.vercel.com/v13/deployments?teamId=$VERCEL_TEAM_ID" \
-            -H "Authorization: Bearer $VERCEL_TOKEN" -H 'Content-Type: application/json' --data "$body")
-          if [ "$status" != "200" ] && [ "$status" != "201" ]; then
-            echo "::error::Exact-commit preview deployment request failed (HTTP $status)"
-            jq -r '.error.code // empty, .error.message // empty' /tmp/deploy.json || true
+          export VERCEL_PROJECT_ID="$VERCEL_PROJECT_ID"
+          deployment_url=$(npx -y vercel@59.1.4 deploy --yes --token "$VERCEL_TOKEN" --scope "$VERCEL_TEAM_SLUG" | tail -n 1)
+          if [[ ! "$deployment_url" =~ ^https://[A-Za-z0-9.-]+\.vercel\.app$ ]]; then
+            echo "::error::Vercel CLI did not return an immutable preview deployment URL"
             exit 1
           fi
-          deployment_id=$(jq -r '.id // empty' /tmp/deploy.json)
-          if [[ ! "$deployment_id" =~ ^dpl_ ]]; then
-            echo "::error::Deployment response did not contain immutable deployment ID"
-            exit 1
-          fi
+          deployment_host=${deployment_url#https://}
+
           for attempt in $(seq 1 90); do
             curl -sS \
               -H "Authorization: Bearer $VERCEL_TOKEN" \
-              "https://api.vercel.com/v13/deployments/$deployment_id?teamId=$VERCEL_TEAM_ID&withGitRepoInfo=true" \
+              "https://api.vercel.com/v13/deployments/$deployment_host?teamId=$VERCEL_TEAM_ID&withGitRepoInfo=true" \
               -o /tmp/deployment-current.json
             state=$(jq -r '.readyState // .status // .state // empty' /tmp/deployment-current.json)
             if [ "$state" = "READY" ]; then break; fi
             if [ "$state" = "ERROR" ] || [ "$state" = "CANCELED" ]; then
-              echo "::error::Vercel deployment ended in state $state"
+              echo "::error::Vercel preview deployment ended in state $state"
               exit 1
             fi
             sleep 4
           done
           state=$(jq -r '.readyState // .status // .state // empty' /tmp/deployment-current.json)
           if [ "$state" != "READY" ]; then
-            echo "::error::Vercel deployment did not become READY"
+            echo "::error::Vercel preview deployment did not become READY"
             exit 1
           fi
+          deployment_id=$(jq -r '.id // .uid // empty' /tmp/deployment-current.json)
           meta_sha=$(jq -r '.meta.githubCommitSha // .gitSource.sha // empty' /tmp/deployment-current.json)
-          meta_org=$(jq -r '.meta.githubCommitOrg // empty' /tmp/deployment-current.json)
-          meta_repo=$(jq -r '.meta.githubCommitRepo // empty' /tmp/deployment-current.json)
+          meta_org=$(jq -r '.meta.githubCommitOrg // .meta.githubOrg // empty' /tmp/deployment-current.json)
+          meta_repo=$(jq -r '.meta.githubCommitRepo // .meta.githubRepo // empty' /tmp/deployment-current.json)
           project_id=$(jq -r '.projectId // empty' /tmp/deployment-current.json)
+          target=$(jq -r 'if .target == null then "preview" else .target end' /tmp/deployment-current.json)
+          if [[ ! "$deployment_id" =~ ^dpl_ ]]; then
+            echo "::error::Preview deployment response did not contain immutable deployment ID"
+            exit 1
+          fi
+          if [ "$target" != "preview" ]; then
+            echo "::error::Deployment is not preview-targeted ($target)"
+            exit 1
+          fi
           if [ "$meta_sha" != "$CANDIDATE_SHA" ] || [ "$meta_org" != "$TARGET_REPOSITORY_OWNER" ] || [ "$meta_repo" != "$TARGET_REPOSITORY_NAME" ] || [ "$project_id" != "$VERCEL_PROJECT_ID" ]; then
             echo "::error::Provider deployment provenance does not match exact GitHub candidate"
             exit 1
           fi
-          deployment_url="https://$(jq -r '.url' /tmp/deployment-current.json)"
           echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
           echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
 
