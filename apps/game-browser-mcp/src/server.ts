@@ -2,18 +2,16 @@ import { fileURLToPath } from 'node:url';
 import express, { type RequestHandler } from 'express';
 import { createMcpExpressApp } from '@modelcontextprotocol/express';
 import { toNodeHandler } from '@modelcontextprotocol/node';
-import { Redis } from '@upstash/redis';
 
 import { SignedBearerPrincipalResolver } from './auth/principal.js';
-import { RedisRateLimiter } from './auth/rate-limit.js';
 import { VercelSandboxBrowser } from './browser/vercel-sandbox-browser.js';
 import { loadRuntimeConfig } from './env.js';
 import { createGameMcpHandler, type GameToolSurface } from './mcp.js';
 import { createRegistrationHandler } from './admin/register-deployment.js';
+import { CapabilityRegistrationStore, RegistrationCapabilityCodec } from './provenance/registration-capability.js';
 import { RegistrationService } from './provenance/registration-service.js';
-import { UpstashRegistrationStore } from './provenance/upstash-registration-store.js';
 import { VercelDeploymentVerifier } from './provenance/vercel-deployment.js';
-import { UpstashSessionStore } from './sessions/upstash-session-store.js';
+import { VercelSandboxSessionStore } from './sessions/vercel-sandbox-session-store.js';
 import { createGameToolServices } from './tools/index.js';
 
 export interface RuntimeAppOptions {
@@ -26,8 +24,6 @@ export type GameToolSurfaceFactory = (authorization: string | undefined) => Game
 const fixtureRoot = fileURLToPath(new URL('../fixtures/game/', import.meta.url));
 
 export const PRODUCTION_ENVIRONMENT_NAMES = [
-  'UPSTASH_REDIS_REST_URL',
-  'UPSTASH_REDIS_REST_TOKEN',
   'VERCEL_API_TOKEN',
   'VERCEL_TEAM_ID',
   'TARGET_PROJECT_ID',
@@ -39,6 +35,7 @@ export const PRODUCTION_ENVIRONMENT_NAMES = [
   'APPROVED_REDIRECT_HOSTS',
   'AGENT_BROWSER_SNAPSHOT_ID',
   'REGISTRATION_CONTROL_TOKEN',
+  'REGISTRATION_CAPABILITY_SECRET',
   'OWNER_BINDING_SECRET',
   'PRINCIPAL_AUDIENCE',
   'RUNTIME_ALLOWED_HOSTS',
@@ -83,11 +80,10 @@ function positiveRateLimit(env: Record<string, string | undefined>, name: string
 }
 
 export function createProductionRuntimeApp(env: Record<string, string | undefined> = process.env) {
-  const redisUrl = required(env, 'UPSTASH_REDIS_REST_URL');
-  const redisToken = required(env, 'UPSTASH_REDIS_REST_TOKEN');
   const vercelToken = required(env, 'VERCEL_API_TOKEN');
   const snapshotId = required(env, 'AGENT_BROWSER_SNAPSHOT_ID');
   const registrationControlToken = required(env, 'REGISTRATION_CONTROL_TOKEN');
+  const registrationCapabilitySecret = required(env, 'REGISTRATION_CAPABILITY_SECRET');
   const ownerBindingSecret = required(env, 'OWNER_BINDING_SECRET');
   const principalAudience = required(env, 'PRINCIPAL_AUDIENCE');
   for (const name of ['TARGET_PROJECT_ID', 'TARGET_REPOSITORY_OWNER', 'TARGET_REPOSITORY_NAME', 'TARGET_ENTRY_PATH', 'APPROVED_DEPLOYMENT_HOST_PATTERNS']) required(env, name);
@@ -101,17 +97,20 @@ export function createProductionRuntimeApp(env: Record<string, string | undefine
   ];
   if (runtimeAllowedHosts.length === 0) throw new Error('production configuration requires RUNTIME_ALLOWED_HOSTS or VERCEL_URL');
 
+  // Retain strict parsing for compatibility while coarse production rate limiting moves to Vercel WAF.
   const sessionStartsPerMinute = positiveRateLimit(env, 'SESSION_STARTS_PER_MINUTE', 6);
   const actionCallsPerMinute = positiveRateLimit(env, 'ACTION_CALLS_PER_MINUTE', 120);
 
-  const redis = new Redis({ url: redisUrl, token: redisToken });
-  const sessions = new UpstashSessionStore(redis as any);
-  const registrations = new UpstashRegistrationStore(redis as any);
-  const rateLimiter = new RedisRateLimiter(redis as any);
-  const verifier = new VercelDeploymentVerifier({ token: vercelToken, ...(env.VERCEL_TEAM_ID?.trim() ? { teamId: env.VERCEL_TEAM_ID.trim() } : {}) });
+  const codec = new RegistrationCapabilityCodec({ secret: registrationCapabilitySecret });
+  const registrations = new CapabilityRegistrationStore(codec);
+  const sessions = new VercelSandboxSessionStore();
+  const verifier = new VercelDeploymentVerifier({
+    token: vercelToken,
+    ...(env.VERCEL_TEAM_ID?.trim() ? { teamId: env.VERCEL_TEAM_ID.trim() } : {}),
+  });
   const browser = new VercelSandboxBrowser({ snapshotId });
   const bearerResolver = new SignedBearerPrincipalResolver({ secret: ownerBindingSecret, audience: principalAudience });
-  const registrationService = new RegistrationService({ verifier, store: registrations, trust: config.trust });
+  const registrationService = new RegistrationService({ verifier, codec, trust: config.trust });
   const registrationHandler = createRegistrationHandler(registrationService, registrationControlToken);
 
   const servicesFactory: GameToolSurfaceFactory = (authorization) => createGameToolServices({
@@ -126,7 +125,8 @@ export function createProductionRuntimeApp(env: Record<string, string | undefine
       return answers.map(({ address, family }) => ({ address, family: family as 4 | 6 }));
     },
     limits: config.limits,
-    rateLimiter,
+    // Coarse production rate limiting is configured at Vercel/WAF. These values remain
+    // available to injected/test limiters but production does not depend on a shared DB.
     rateLimits: {
       sessionStarts: sessionStartsPerMinute,
       actionCalls: actionCallsPerMinute,
