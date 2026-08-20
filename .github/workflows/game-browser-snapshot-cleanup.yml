@@ -18,7 +18,7 @@ jobs:
       VERCEL_TEAM_ID: team_3LfEMNVsAEbXKLoCrnzXQzrF
       VERCEL_PROJECT_ID: prj_bU062HqgwiUYUtMuX4nRN0GpXRd9
     steps:
-      - name: Delete obsolete dedicated-project snapshots
+      - name: Verify dedicated-project snapshot cleanup
         shell: bash
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -32,46 +32,36 @@ jobs:
               -H "Authorization: Bearer $VERCEL_TOKEN"
           }
 
-          status=$(list_snapshots /tmp/snapshots.json)
-          if [ "$status" != "200" ]; then
-            echo "::error::Unable to list dedicated-project Sandbox snapshots (HTTP $status)"
-            jq -r '.error.code // empty, .error.message // empty' /tmp/snapshots.json || true
-            exit 1
-          fi
-
-          jq -r '
-            if (.snapshots? | type) == "array" then .snapshots[]?.id
-            elif (.data?.snapshots? | type) == "array" then .data.snapshots[]?.id
-            elif (.data? | type) == "array" then .data[]?.id
-            else empty end
-          ' /tmp/snapshots.json > /tmp/snapshot-ids.txt
-
-          count=$(grep -c '^snap_' /tmp/snapshot-ids.txt || true)
-          echo "Deleting $count obsolete snapshots from dedicated project"
-          while IFS= read -r snapshot_id; do
-            [ -z "$snapshot_id" ] && continue
-            [[ "$snapshot_id" =~ ^snap_[A-Za-z0-9]+$ ]] || { echo "::error::Unexpected snapshot ID"; exit 1; }
-            delete_status=$(curl -sS -o /tmp/delete.json -w '%{http_code}' \
-              -X DELETE "https://api.vercel.com/v2/sandboxes/snapshots/$snapshot_id?teamId=$VERCEL_TEAM_ID" \
-              -H "Authorization: Bearer $VERCEL_TOKEN")
-            if [ "$delete_status" != "200" ]; then
-              echo "::error::Failed to delete $snapshot_id (HTTP $delete_status)"
-              jq -r '.error.code // empty, .error.message // empty' /tmp/delete.json || true
+          for attempt in 1 2 3 4 5 6; do
+            status=$(list_snapshots /tmp/snapshots.json)
+            if [ "$status" != "200" ]; then
+              echo "::error::Unable to list dedicated-project Sandbox snapshots (HTTP $status)"
+              jq -r '.error.code // empty, .error.message // empty' /tmp/snapshots.json || true
               exit 1
             fi
-            echo "Deleted $snapshot_id"
-          done < /tmp/snapshot-ids.txt
+            remaining=$(jq -r '
+              def rows:
+                if (.snapshots? | type) == "array" then .snapshots
+                elif (.data?.snapshots? | type) == "array" then .data.snapshots
+                elif (.data? | type) == "array" then .data
+                else [] end;
+              [rows[] | select((.status // "created") != "deleted")] | length
+            ' /tmp/snapshots.json)
+            echo "Snapshot cleanup visibility attempt $attempt: remaining=$remaining"
+            if [ "$remaining" = "0" ]; then
+              echo "SNAPSHOT_CLEANUP=PASS remaining=0"
+              exit 0
+            fi
+            sleep 10
+          done
 
-          verify_status=$(list_snapshots /tmp/verify.json)
-          test "$verify_status" = "200"
-          remaining=$(jq -r '
-            if (.snapshots? | type) == "array" then (.snapshots|length)
-            elif (.data?.snapshots? | type) == "array" then (.data.snapshots|length)
-            elif (.data? | type) == "array" then (.data|length)
-            else 0 end
-          ' /tmp/verify.json)
-          if [ "$remaining" != "0" ]; then
-            echo "::error::$remaining dedicated-project snapshots remain after cleanup"
-            exit 1
-          fi
-          echo "SNAPSHOT_CLEANUP=PASS deleted=$count remaining=0"
+          echo "::error::Dedicated-project snapshot deletions have not become visible yet"
+          jq -r '
+            def rows:
+              if (.snapshots? | type) == "array" then .snapshots
+              elif (.data?.snapshots? | type) == "array" then .data.snapshots
+              elif (.data? | type) == "array" then .data
+              else [] end;
+            rows[] | "SNAPSHOT \(.id) status=\(.status // "unknown") size=\(.sizeBytes // 0)"
+          ' /tmp/snapshots.json
+          exit 1
