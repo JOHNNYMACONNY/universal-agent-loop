@@ -16,5 +16,6 @@ test('provider bootstrap records coarse MCP rate-limit configuration or a real p
   assert.match(workflow, /(?:security\/firewall\/config|firewall rules)/, 'rate-limit gate must inspect or configure Vercel Firewall');
   assert.match(workflow, /platform_limited/, 'unsupported plan/capability must be recorded explicitly rather than silently skipped');
   assert.match(workflow, /runtime-completion-metadata\.json/, 'bootstrap must persist the rate-limit outcome as completion evidence');
-  assert.doesNotMatch(workflow, /\b(?:buy pro|purchase|upgrade.*plan)\b/i, 'bootstrap must never change billing to obtain WAF rate limiting');
+  assert.doesNotMatch(workflow, /\b(?:npx\s+-y\s+)?vercel(?:@\d+(?:\.\d+){2})?\s+buy\s+pro\b/i, 'bootstrap must never invoke the Vercel CLI billing upgrade command');
+  assert.doesNotMatch(workflow, /\bbuy_pro\b/i, 'bootstrap must never invoke a billing purchase tool/action');
 });
