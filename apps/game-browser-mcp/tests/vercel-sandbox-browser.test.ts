@@ -43,7 +43,7 @@ class FakeFactory implements SandboxFactory {
 
 test('start creates persistent snapshot sandbox with current deny-by-default SDK egress policy and fixed worker command', async () => {
   const factory = new FakeFactory();
-  const browser = new VercelSandboxBrowser({ factory, snapshotId: 'snap_1', timeoutMs: 900_000, snapshotExpirationMs: 3_600_000 });
+  const browser = new VercelSandboxBrowser({ factory, snapshotId: 'snap_1', timeoutMs: 900_000, snapshotExpirationMs: 86_400_000 });
   const result = await browser.start({
     logicalSessionId: 'session_1', targetUrl: 'https://game.example.com',
     allowedHosts: ['game.example.com', 'cdn.example.com'], viewport: { width: 1280, height: 720 },
@@ -52,7 +52,7 @@ test('start creates persistent snapshot sandbox with current deny-by-default SDK
   assert.equal(factory.createOptions.name, 'gbr-session_1');
   assert.deepEqual(factory.createOptions.source, { type: 'snapshot', snapshotId: 'snap_1' });
   assert.equal(factory.createOptions.persistent, true);
-  assert.equal(factory.createOptions.snapshotExpiration, 3_600_000);
+  assert.equal(factory.createOptions.snapshotExpiration, 86_400_000);
   assert.deepEqual(factory.createOptions.networkPolicy, {
     allow: ['game.example.com', 'cdn.example.com'],
     subnets: { deny: [...PRIVATE_RESERVED_CIDRS] },
