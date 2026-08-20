@@ -32,13 +32,20 @@ test('health is public and does not expose configuration', async () => {
   assert.deepEqual(response.body, { ok: true, service: 'ual-gpt-action-api' });
 });
 
-test('OpenAPI schema is public, host-bound, and declares bearer auth for skill retrieval', async () => {
+test('OpenAPI schema is public, host-bound, importable, and declares bearer auth for skill retrieval', async () => {
   const response = await handleActionRequest(request('/openapi.json'), { env, fetchImpl: async () => { throw new Error('unexpected fetch'); } });
   assert.equal(response.status, 200);
   assert.equal(response.body.openapi, '3.1.0');
   assert.deepEqual(response.body.servers, [{ url: 'https://preview.example.test' }]);
   assert.equal(response.body.components.securitySchemes.bearerAuth.type, 'http');
   assert.equal(response.body.components.securitySchemes.bearerAuth.scheme, 'bearer');
+  assert.equal(typeof response.body.components.schemas, 'object');
+  assert.equal(Array.isArray(response.body.components.schemas), false);
+  assert.equal(response.body.components.schemas.SkillResponse.type, 'object');
+  assert.deepEqual(
+    response.body.paths['/skills/{name}'].get.responses['200'].content['application/json'].schema,
+    { $ref: '#/components/schemas/SkillResponse' },
+  );
   assert.equal(response.body.paths['/skills/{name}'].get.operationId, 'getCanonicalSkill');
   assert.deepEqual(response.body.paths['/skills/{name}'].get.security, [{ bearerAuth: [] }]);
 });
