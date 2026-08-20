@@ -1,0 +1,22 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { buildSandboxNetworkPolicyForHosts } from '../src/security/network-policy.js';
+import { isGloballyRoutableAddress } from '../src/security/url-policy.js';
+
+test('Vercel Sandbox subnet policy emits provider-valid IPv4 CIDRs only', () => {
+  const policy = buildSandboxNetworkPolicyForHosts(['game.example.com']);
+
+  assert.ok(policy.subnets.deny.length > 0);
+  assert.equal(policy.subnets.deny.some((cidr) => cidr.includes(':')), false);
+  assert.ok(policy.subnets.deny.includes('10.0.0.0/8'));
+  assert.ok(policy.subnets.deny.includes('127.0.0.0/8'));
+  assert.ok(policy.subnets.deny.includes('169.254.0.0/16'));
+  assert.ok(policy.subnets.deny.includes('192.168.0.0/16'));
+});
+
+test('application URL guard continues rejecting private and reserved IPv6 addresses', () => {
+  for (const address of ['::', '::1', 'fc00::1', 'fd12::1', 'fe80::1', 'ff02::1', '2001:db8::1']) {
+    assert.equal(isGloballyRoutableAddress(address), false, `expected ${address} to remain blocked`);
+  }
+});
