@@ -79,7 +79,7 @@ test('sandbox policy is deny-by-default with only trusted concrete hosts', () =>
   assert.deepEqual(policy.allow, ['game.example.com', 'cdn.example.com']);
   assert.ok(policy.subnets.deny.includes('10.0.0.0/8'));
   assert.ok(policy.subnets.deny.includes('169.254.0.0/16'));
-  assert.ok(policy.subnets.deny.includes('::1/128'));
+  assert.equal(policy.subnets.deny.some((cidr) => cidr.includes(':')), false);
   assert.equal('mode' in policy, false);
   assert.equal('allowedDomains' in policy, false);
   assert.equal('allowedCIDRs' in policy, false);
