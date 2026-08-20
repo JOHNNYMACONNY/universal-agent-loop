@@ -10,9 +10,10 @@ The production path is:
 ChatGPT / MCP client
 -> stateless Streamable HTTP `/mcp`
 -> per-request authenticated principal
--> Upstash Redis session/registration/idempotency state
--> Vercel Sandbox
--> pinned agent-browser + Chromium
+-> signed exact-deployment registration capability
+-> named persistent Vercel Sandbox
+   -> sandbox-local durable session/idempotency ledger
+   -> pinned agent-browser + Chromium
 -> exact commit-bound registered target
 ```
 
@@ -25,8 +26,6 @@ All page/Canvas/DOM/console/network/instrumentation content is `UNTRUSTED_TARGET
 Set values through the deployment provider; never commit them.
 
 ```text
-UPSTASH_REDIS_REST_URL
-UPSTASH_REDIS_REST_TOKEN
 VERCEL_API_TOKEN
 TARGET_PROJECT_ID
 TARGET_REPOSITORY_OWNER
@@ -35,6 +34,7 @@ TARGET_ENTRY_PATH
 APPROVED_DEPLOYMENT_HOST_PATTERNS
 AGENT_BROWSER_SNAPSHOT_ID
 REGISTRATION_CONTROL_TOKEN
+REGISTRATION_CAPABILITY_SECRET
 OWNER_BINDING_SECRET
 PRINCIPAL_AUDIENCE
 ```
@@ -52,6 +52,12 @@ AGENT_BROWSER_VERSION        # required when building a browser snapshot
 ```
 
 `TARGET_ENTRY_PATH` is server-owned, such as `/fixture/`; a model cannot supply it. `APPROVED_DEPLOYMENT_HOST_PATTERNS` is only a discovery constraint: each concrete `dpl_...` deployment is still verified against Vercel project/repository/commit provenance. `RUNTIME_ALLOWED_HOSTS` protects the MCP HTTP host surface; Vercel's `VERCEL_URL` is also accepted automatically at runtime.
+
+## Durable session boundary
+
+The coordinator is stateless. Each logical QA session owns one named persistent Vercel Sandbox. The closed sandbox worker stores the canonical session record, action/observation sequences, held-input state, and batch/idempotency ledger in that sandbox filesystem using serialized mutations and atomic file replacement.
+
+A persistent filesystem is **not** evidence that Chromium survived. Every fresh coordinator call reconnects without auto-resuming a stopped VM. If the VM/browser is gone, the runtime returns `SESSION_EXPIRED` or `SESSION_RECOVERY_REQUIRED` instead of claiming continuity. Explicit `game_session_end` releases held input, closes Chromium, stops the sandbox, and deletes the named persistent sandbox.
 
 ## Authentication boundary
 
@@ -82,7 +88,11 @@ REGISTRATION_CONTROL_TOKEN=<secret> \
 node --import tsx scripts/register-vercel-deployment.ts
 ```
 
-The server derives repository/project/target path/allowed hosts from trusted configuration and re-verifies provider metadata. A moving branch alias is rejected.
+The server derives repository/project/target path/allowed hosts from trusted configuration, re-verifies provider metadata, and returns a short-lived HMAC-signed registration capability. A moving branch alias or tampered/expired capability is rejected.
+
+## Rate limiting
+
+Production coarse abuse limiting belongs at the Vercel edge/WAF layer and does not require a shared application database. The runtime independently enforces deterministic maximum session lifetime/idle time, actions per input, actions per session, waits, relative-pointer bounds, ownership, and request-body size.
 
 ## Verification
 
@@ -100,7 +110,7 @@ Root UAL must also remain green from the repository root:
 npm test
 ```
 
-Provider-backed acceptance requires `REMOTE_MCP_URL`, `TARGET_REGISTRATION_ID`, `EXPECTED_COMMIT_SHA`, and a valid signed test principal bearer. The runner creates a fresh MCP client for every tool call and proves browser-session continuity through remote durable state only.
+Provider-backed acceptance requires `REMOTE_MCP_URL`, `TARGET_REGISTRATION_ID`, `EXPECTED_COMMIT_SHA`, and a valid signed test principal bearer. The runner creates a fresh MCP client for every tool call and proves continuity through the named persistent Sandbox ledger rather than coordinator memory.
 
 ```bash
 npm run test:remote
