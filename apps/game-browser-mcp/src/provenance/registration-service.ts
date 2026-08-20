@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { TargetRegistrationSchema, type TargetRegistration } from '../contracts.js';
 import type { RuntimeConfig } from '../env.js';
 import { RuntimeError } from '../errors.js';
+import type { RegistrationCapabilityCodec, RegistrationCapabilityPayload } from './registration-capability.js';
 import type { RegistrationStore } from './registration-store.js';
 import type { DeploymentVerifier } from './types.js';
 
@@ -13,8 +14,9 @@ export interface RegistrationInput {
 
 interface Options {
   verifier: DeploymentVerifier;
-  store: RegistrationStore;
   trust: RuntimeConfig['trust'];
+  store?: RegistrationStore;
+  codec?: RegistrationCapabilityCodec;
   now?: () => Date;
   idFactory?: () => string;
   registrationTtlMs?: number;
@@ -30,15 +32,18 @@ function hostMatchesPattern(host: string, pattern: string): boolean {
 
 export class RegistrationService {
   readonly #verifier: DeploymentVerifier;
-  readonly #store: RegistrationStore;
+  readonly #store?: RegistrationStore;
+  readonly #codec?: RegistrationCapabilityCodec;
   readonly #trust: RuntimeConfig['trust'];
   readonly #now: () => Date;
   readonly #idFactory: () => string;
   readonly #ttlMs: number;
 
   constructor(options: Options) {
+    if (!options.store && !options.codec) throw new Error('registration service requires store or capability codec');
     this.#verifier = options.verifier;
     this.#store = options.store;
+    this.#codec = options.codec;
     this.#trust = options.trust;
     this.#now = options.now ?? (() => new Date());
     this.#idFactory = options.idFactory ?? (() => `reg_${randomUUID()}`);
@@ -69,8 +74,7 @@ export class RegistrationService {
       : new URL(entryPath, `${providerUrl.origin}/`).toString();
 
     const created = this.#now();
-    const registration = TargetRegistrationSchema.parse({
-      target_registration_id: this.#idFactory(),
+    const payload: RegistrationCapabilityPayload = {
       project_id: this.#trust.projectId,
       repository,
       expected_commit_sha: verified.commitSha,
@@ -85,9 +89,15 @@ export class RegistrationService {
       created_at: created.toISOString(),
       expires_at: new Date(created.getTime() + this.#ttlMs).toISOString(),
       provenance_source: 'provider_api',
-    });
+    };
 
-    await this.#store.put(registration);
+    if (this.#codec) return this.#codec.issue(payload);
+
+    const registration = TargetRegistrationSchema.parse({
+      target_registration_id: this.#idFactory(),
+      ...payload,
+    });
+    await this.#store!.put(registration);
     return registration;
   }
 }
