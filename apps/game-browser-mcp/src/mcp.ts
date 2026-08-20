@@ -2,7 +2,7 @@ import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod/v4';
 
 import { GameActionSchema } from './contracts.js';
-import { asRuntimeError } from './errors.js';
+import { asRuntimeError, RuntimeError } from './errors.js';
 
 export interface GameToolSurface {
   sessionStart(input: unknown): Promise<unknown>;
@@ -26,8 +26,33 @@ const descriptions = {
   game_session_end: 'Release held input and end the isolated browser session. This tool grants no authority over repositories, deployments, publication, credentials, or billing.',
 } as const;
 
+const MAX_SCREENSHOT_BYTES = 2_000_000;
+
 function result(value: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(value) }] };
+  const structured = structuredClone(value as any);
+  const container = structured && typeof structured === 'object'
+    ? ((structured as any).observation && typeof (structured as any).observation === 'object' ? (structured as any).observation : structured as any)
+    : undefined;
+  const screenshot = container?.screenshot;
+  let image: { type: 'image'; data: string; mimeType: string } | undefined;
+  if (screenshot && typeof screenshot === 'object' && typeof screenshot.base64 === 'string') {
+    const bytes = Buffer.from(screenshot.base64, 'base64');
+    if (bytes.byteLength > MAX_SCREENSHOT_BYTES) {
+      throw new RuntimeError('LIMIT_EXCEEDED', 'screenshot exceeds 2 MB MCP image limit');
+    }
+    image = { type: 'image', data: screenshot.base64, mimeType: 'image/png' };
+    container.screenshot = {
+      content_ref: 'mcp:image:1',
+      mime_type: 'image/png',
+      content_trust: 'UNTRUSTED_TARGET_CONTENT',
+    };
+  }
+  return {
+    content: [
+      { type: 'text' as const, text: JSON.stringify(structured) },
+      ...(image ? [image] : []),
+    ],
+  };
 }
 
 function failure(error: unknown) {
