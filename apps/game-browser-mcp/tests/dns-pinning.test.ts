@@ -13,16 +13,15 @@ const registration: TargetRegistration = {
 
 test('sandbox egress combines exact trusted domains with private/reserved CIDR denial', () => {
   const policy = buildSandboxNetworkPolicy(registration);
-  assert.deepEqual(policy.allowedDomains, ['game.example.com', 'cdn.example.com']);
-  assert.deepEqual(policy.allowedCIDRs, []);
+  assert.deepEqual(policy.allow, ['game.example.com', 'cdn.example.com']);
   for (const cidr of ['10.0.0.0/8', '127.0.0.0/8', '169.254.0.0/16', '192.168.0.0/16', '::1/128', 'fc00::/7', 'fe80::/10']) {
-    assert.ok(policy.deniedCIDRs.includes(cidr as (typeof PRIVATE_RESERVED_CIDRS)[number]), `missing ${cidr}`);
+    assert.ok(policy.subnets.deny.includes(cidr as (typeof PRIVATE_RESERVED_CIDRS)[number]), `missing ${cidr}`);
   }
 });
 
 test('policy never adds an unregistered hostname or permissive public CIDR', () => {
   const policy = buildSandboxNetworkPolicy(registration);
-  assert.equal(policy.allowedDomains.includes('evil.example.com'), false);
-  assert.equal(policy.allowedCIDRs.length, 0);
-  assert.equal(policy.deniedCIDRs.length, PRIVATE_RESERVED_CIDRS.length);
+  assert.equal(policy.allow.includes('evil.example.com'), false);
+  assert.equal(policy.subnets.deny.length, PRIVATE_RESERVED_CIDRS.length);
+  assert.equal('allowedCIDRs' in policy, false);
 });
