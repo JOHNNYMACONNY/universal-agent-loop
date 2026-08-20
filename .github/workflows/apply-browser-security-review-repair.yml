@@ -1,0 +1,242 @@
+name: apply-browser-security-review-repair
+
+on:
+  push:
+    branches:
+      - chatgpt/autonomous-dev-loop
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/autonomous-dev-loop
+      - name: Apply reviewed DNS-rebinding and navigation-policy repair
+        shell: bash
+        run: |
+          cat > apps/game-browser-mcp/src/security/network-policy.ts <<'EOF'
+          import type { TargetRegistration } from '../contracts.js';
+
+          export interface SandboxNetworkPolicy {
+            mode: 'custom';
+            allowedDomains: string[];
+            allowedCIDRs: string[];
+            deniedCIDRs: string[];
+          }
+
+          export const PRIVATE_RESERVED_CIDRS = [
+            '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
+            '169.254.0.0/16', '172.16.0.0/12', '192.0.0.0/24', '192.0.2.0/24',
+            '192.168.0.0/16', '198.18.0.0/15', '198.51.100.0/24', '203.0.113.0/24',
+            '224.0.0.0/4', '240.0.0.0/4',
+            '::/128', '::1/128', 'fc00::/7', 'fe80::/10', 'ff00::/8', '2001:db8::/32',
+          ] as const;
+
+          export function buildSandboxNetworkPolicyForHosts(hosts: string[]): SandboxNetworkPolicy {
+            return {
+              mode: 'custom',
+              allowedDomains: [...new Set(hosts.map((host) => host.toLowerCase()))],
+              allowedCIDRs: [],
+              deniedCIDRs: [...PRIVATE_RESERVED_CIDRS],
+            };
+          }
+
+          export function buildSandboxNetworkPolicy(registration: TargetRegistration): SandboxNetworkPolicy {
+            return buildSandboxNetworkPolicyForHosts(registration.allowed_hosts);
+          }
+          EOF
+
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('apps/game-browser-mcp/src/browser/vercel-sandbox-browser.ts')
+          s = p.read_text()
+          marker = "import type {\n  AcceptedActionBatch,"
+          if "buildSandboxNetworkPolicyForHosts" not in s:
+              s = s.replace(marker, "import { buildSandboxNetworkPolicyForHosts } from '../security/network-policy.js';\n\n" + marker)
+          old = "networkPolicy: { mode: 'custom', allowedDomains: [...new Set(input.allowedHosts)], allowedCIDRs: [], deniedCIDRs: [] },"
+          new = "networkPolicy: buildSandboxNetworkPolicyForHosts(input.allowedHosts),"
+          if old not in s:
+              raise SystemExit('expected Vercel network-policy construction not found')
+          s = s.replace(old, new)
+          p.write_text(s)
+
+          p = Path('apps/game-browser-mcp/src/tools/index.ts')
+          s = p.read_text()
+          anchor = "  async function requireLive(ref: BrowserSessionRef, sessionId: string): Promise<void> {"
+          helper = """  async function validateObservedUrl(url: string, registration: TargetRegistration): Promise<void> {\n    let parsed: URL;\n    try { parsed = new URL(url); }\n    catch { throw new RuntimeError('TARGET_BLOCKED', 'browser reported an invalid URL'); }\n    await validateRegisteredUrl(parsed, registration, deps.resolveDns);\n  }\n\n"""
+          if helper.strip() not in s:
+              if anchor not in s:
+                  raise SystemExit('tool helper anchor missing')
+              s = s.replace(anchor, helper + anchor)
+
+          old = "    const started = await deps.browser.start({ logicalSessionId: sessionId, targetUrl: reg.deployment_url, allowedHosts: reg.allowed_hosts, ...(input.viewport ? { viewport: input.viewport } : {}) });\n    const absoluteExpiry"
+          new = "    const started = await deps.browser.start({ logicalSessionId: sessionId, targetUrl: reg.deployment_url, allowedHosts: reg.allowed_hosts, ...(input.viewport ? { viewport: input.viewport } : {}) });\n    try { await validateObservedUrl(started.observation.url, reg); }\n    catch (error) { try { await deps.browser.end(started.session); } catch {} throw error; }\n    const absoluteExpiry"
+          if old not in s:
+              raise SystemExit('session-start observation anchor missing')
+          s = s.replace(old, new)
+
+          old = "    const raw = await deps.browser.observe(owned.ref);\n    await deps.sessions.updateHeldInput"
+          new = "    const raw = await deps.browser.observe(owned.ref);\n    try { await validateObservedUrl(raw.url, owned.registration); }\n    catch (error) { await cleanup(owned.session, owned.ref); throw error; }\n    await deps.sessions.updateHeldInput"
+          if old not in s:
+              raise SystemExit('observe anchor missing')
+          s = s.replace(old, new, 1)
+
+          old = "    const raw = await deps.browser.reset(owned.ref);\n    await deps.sessions.resetRecovery"
+          new = "    const raw = await deps.browser.reset(owned.ref);\n    try { await validateObservedUrl(raw.url, owned.registration); }\n    catch (error) { await cleanup(owned.session, owned.ref); throw error; }\n    await deps.sessions.resetRecovery"
+          if old not in s:
+              raise SystemExit('reset anchor missing')
+          s = s.replace(old, new)
+          p.write_text(s)
+          PY
+
+          cat > apps/game-browser-mcp/tests/dns-pinning.test.ts <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+
+          import type { TargetRegistration } from '../src/contracts.js';
+          import { buildSandboxNetworkPolicy, PRIVATE_RESERVED_CIDRS } from '../src/security/network-policy.js';
+
+          const registration: TargetRegistration = {
+            target_registration_id: 'reg_1', project_id: 'project-1', repository: { owner: 'owner', name: 'repo' },
+            expected_commit_sha: 'a'.repeat(40), deployment_id: 'dpl_1', deployment_url: 'https://game.example.com/fixture/',
+            deployment_origin: 'https://game.example.com', allowed_hosts: ['game.example.com', 'cdn.example.com'],
+            created_at: '2026-08-19T00:00:00.000Z', expires_at: '2026-08-19T00:15:00.000Z', provenance_source: 'provider_api',
+          };
+
+          test('sandbox egress combines exact trusted domains with private/reserved CIDR denial', () => {
+            const policy = buildSandboxNetworkPolicy(registration);
+            assert.deepEqual(policy.allowedDomains, ['game.example.com', 'cdn.example.com']);
+            assert.deepEqual(policy.allowedCIDRs, []);
+            for (const cidr of ['10.0.0.0/8', '127.0.0.0/8', '169.254.0.0/16', '192.168.0.0/16', '::1/128', 'fc00::/7', 'fe80::/10']) {
+              assert.ok(policy.deniedCIDRs.includes(cidr as (typeof PRIVATE_RESERVED_CIDRS)[number]), `missing ${cidr}`);
+            }
+          });
+
+          test('policy never adds an unregistered hostname or permissive public CIDR', () => {
+            const policy = buildSandboxNetworkPolicy(registration);
+            assert.equal(policy.allowedDomains.includes('evil.example.com'), false);
+            assert.equal(policy.allowedCIDRs.length, 0);
+            assert.equal(policy.deniedCIDRs.length, PRIVATE_RESERVED_CIDRS.length);
+          });
+          EOF
+
+          cat > apps/game-browser-mcp/tests/vercel-sandbox-browser.test.ts <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+
+          import { VercelSandboxBrowser, type SandboxFactory, type SandboxHandle } from '../src/browser/vercel-sandbox-browser.js';
+          import { PRIVATE_RESERVED_CIDRS } from '../src/security/network-policy.js';
+
+          class FakeHandle implements SandboxHandle {
+            readonly name = 'gbr-session_1';
+            status: string = 'running';
+            calls: Array<{ cmd: string; args: string[] }> = [];
+            async runCommand(cmd: string, args: string[]) {
+              this.calls.push({ cmd, args });
+              const request = JSON.parse(Buffer.from(args[1]!, 'base64url').toString('utf8')) as { type: string };
+              const payload = request.type === 'health'
+                ? { ok: true, alive: true }
+                : request.type === 'start' || request.type === 'observe' || request.type === 'reset'
+                  ? { ok: true, observation: { url: 'https://game.example.com', heldKeys: [], heldPointerButtons: [] } }
+                  : request.type === 'input'
+                    ? { ok: true, status: 'COMPLETE', heldKeys: [], heldPointerButtons: [] }
+                    : request.type === 'read_state'
+                      ? { ok: true, value: { score: 1 } }
+                      : { ok: true };
+              return { exitCode: 0, stdout: async () => JSON.stringify(payload), stderr: async () => '' };
+            }
+            currentSessionStatus() { return this.status; }
+            async stop() { this.status = 'stopped'; }
+            async delete() { this.status = 'deleted'; }
+          }
+
+          class FakeFactory implements SandboxFactory {
+            readonly handle = new FakeHandle();
+            createOptions: any;
+            getCalls = 0;
+            async create(options: unknown) { this.createOptions = options; return this.handle; }
+            async get(_name: string) { this.getCalls += 1; return this.handle; }
+          }
+
+          test('start creates non-persistent snapshot sandbox with exact-domain/private-CIDR network policy and fixed worker command', async () => {
+            const factory = new FakeFactory();
+            const browser = new VercelSandboxBrowser({ factory, snapshotId: 'snap_1', timeoutMs: 900_000 });
+            const result = await browser.start({
+              logicalSessionId: 'session_1', targetUrl: 'https://game.example.com',
+              allowedHosts: ['game.example.com', 'cdn.example.com'], viewport: { width: 1280, height: 720 },
+            });
+            assert.equal(result.session.sandboxId, 'gbr-session_1');
+            assert.equal(factory.createOptions.name, 'gbr-session_1');
+            assert.deepEqual(factory.createOptions.source, { type: 'snapshot', snapshotId: 'snap_1' });
+            assert.equal(factory.createOptions.persistent, false);
+            assert.deepEqual(factory.createOptions.networkPolicy.allowedDomains, ['game.example.com', 'cdn.example.com']);
+            assert.deepEqual(factory.createOptions.networkPolicy.allowedCIDRs, []);
+            assert.deepEqual(factory.createOptions.networkPolicy.deniedCIDRs, [...PRIVATE_RESERVED_CIDRS]);
+            assert.equal(factory.handle.calls[0]?.cmd, 'node');
+            assert.equal(factory.handle.calls[0]?.args[0], '/vercel/sandbox/worker.mjs');
+            assert.equal(factory.handle.calls.some((call) => call.cmd === 'sh' || call.args.includes('-c')), false);
+          });
+
+          test('health checks current VM status without resuming a stopped sandbox by running commands', async () => {
+            const factory = new FakeFactory();
+            const browser = new VercelSandboxBrowser({ factory, snapshotId: 'snap_1' });
+            const session = { logicalSessionId: 'session_1', sandboxId: 'gbr-session_1' };
+            factory.handle.status = 'stopped';
+            const health = await browser.health(session);
+            assert.equal(health.alive, false);
+            assert.equal(factory.handle.calls.length, 0);
+          });
+
+          test('input is encoded as data to the fixed worker, never shell syntax', async () => {
+            const factory = new FakeFactory();
+            const browser = new VercelSandboxBrowser({ factory, snapshotId: 'snap_1' });
+            await browser.input({ logicalSessionId: 'session_1', sandboxId: 'gbr-session_1' }, {
+              actionBatchId: 'b; rm -rf /',
+              actions: [{ type: 'press', key: 'Enter' }],
+            });
+            const call = factory.handle.calls.at(-1)!;
+            assert.equal(call.cmd, 'node');
+            assert.equal(call.args.length, 2);
+            const decoded = JSON.parse(Buffer.from(call.args[1]!, 'base64url').toString('utf8'));
+            assert.equal(decoded.action_batch_id, 'b; rm -rf /');
+          });
+
+          test('readState uses closed worker operation rather than exposing eval on adapter', async () => {
+            const factory = new FakeFactory();
+            const browser = new VercelSandboxBrowser({ factory, snapshotId: 'snap_1' });
+            assert.deepEqual(await browser.readState({ logicalSessionId: 'session_1', sandboxId: 'gbr-session_1' }, '/score'), { score: 1 });
+            const decoded = JSON.parse(Buffer.from(factory.handle.calls.at(-1)!.args[1]!, 'base64url').toString('utf8'));
+            assert.deepEqual(decoded, { type: 'read_state', session_id: 'session_1', path: '/score' });
+          });
+          EOF
+
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('apps/game-browser-mcp/tests/url-policy.test.ts')
+          s = p.read_text()
+          old = """  assert.deepEqual(policy, {\n    mode: 'custom',\n    allowedDomains: ['game.example.com', 'cdn.example.com'],\n    allowedCIDRs: [],\n    deniedCIDRs: [],\n  });"""
+          new = """  assert.equal(policy.mode, 'custom');\n  assert.deepEqual(policy.allowedDomains, ['game.example.com', 'cdn.example.com']);\n  assert.deepEqual(policy.allowedCIDRs, []);\n  assert.ok(policy.deniedCIDRs.includes('10.0.0.0/8'));\n  assert.ok(policy.deniedCIDRs.includes('169.254.0.0/16'));\n  assert.ok(policy.deniedCIDRs.includes('::1/128'));"""
+          if old not in s:
+              raise SystemExit('url-policy network assertion anchor missing')
+          p.write_text(s.replace(old, new))
+          PY
+
+      - name: Commit reviewed repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/game-browser-mcp/src/security/network-policy.ts \
+                  apps/game-browser-mcp/src/browser/vercel-sandbox-browser.ts \
+                  apps/game-browser-mcp/src/tools/index.ts \
+                  apps/game-browser-mcp/tests/dns-pinning.test.ts \
+                  apps/game-browser-mcp/tests/vercel-sandbox-browser.test.ts \
+                  apps/game-browser-mcp/tests/url-policy.test.ts \
+                  apps/game-browser-mcp/tests/navigation-policy.test.ts
+          git commit -m "fix: harden browser egress and navigation validation"
+          git push origin HEAD:chatgpt/autonomous-dev-loop
