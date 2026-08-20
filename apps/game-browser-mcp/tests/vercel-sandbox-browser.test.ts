@@ -35,9 +35,9 @@ class FakeFactory implements SandboxFactory {
   async get(_name: string) { this.getCalls += 1; return this.handle; }
 }
 
-test('start creates non-persistent snapshot sandbox with exact-domain/private-CIDR network policy and fixed worker command', async () => {
+test('start creates persistent snapshot sandbox with bounded persistence, exact-domain egress, and fixed worker command', async () => {
   const factory = new FakeFactory();
-  const browser = new VercelSandboxBrowser({ factory, snapshotId: 'snap_1', timeoutMs: 900_000 });
+  const browser = new VercelSandboxBrowser({ factory, snapshotId: 'snap_1', timeoutMs: 900_000, snapshotExpirationMs: 3_600_000 });
   const result = await browser.start({
     logicalSessionId: 'session_1', targetUrl: 'https://game.example.com',
     allowedHosts: ['game.example.com', 'cdn.example.com'], viewport: { width: 1280, height: 720 },
@@ -45,7 +45,8 @@ test('start creates non-persistent snapshot sandbox with exact-domain/private-CI
   assert.equal(result.session.sandboxId, 'gbr-session_1');
   assert.equal(factory.createOptions.name, 'gbr-session_1');
   assert.deepEqual(factory.createOptions.source, { type: 'snapshot', snapshotId: 'snap_1' });
-  assert.equal(factory.createOptions.persistent, false);
+  assert.equal(factory.createOptions.persistent, true);
+  assert.equal(factory.createOptions.snapshotExpiration, 3_600_000);
   assert.deepEqual(factory.createOptions.networkPolicy.allowedDomains, ['game.example.com', 'cdn.example.com']);
   assert.deepEqual(factory.createOptions.networkPolicy.allowedCIDRs, []);
   assert.deepEqual(factory.createOptions.networkPolicy.deniedCIDRs, [...PRIVATE_RESERVED_CIDRS]);
