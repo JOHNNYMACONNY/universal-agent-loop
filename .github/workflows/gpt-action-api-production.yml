@@ -51,28 +51,69 @@ jobs:
             exit 1
           fi
 
-      - name: Promote branch-scoped Preview credentials to Production
+      - name: Promote Preview credentials to Production
         shell: bash
         run: |
           set -euo pipefail
           api='https://api.vercel.com'
           auth="Authorization: Bearer $VERCEL_TOKEN"
-          encoded_branch=$(jq -rn --arg value "$SOURCE_PREVIEW_BRANCH" '$value|@uri')
           status=$(curl -sS -o /tmp/preview-env.json -w '%{http_code}' -H "$auth" \
-            "$api/v10/projects/$VERCEL_PROJECT_ID/env?gitBranch=$encoded_branch&decrypt=true&teamId=$VERCEL_TEAM_ID")
+            "$api/v10/projects/$VERCEL_PROJECT_ID/env?decrypt=true&teamId=$VERCEL_TEAM_ID")
           if [ "$status" != '200' ]; then
-            echo "::error::Unable to read source Preview environment variables (HTTP $status)"
+            echo "::error::Unable to read Preview environment variables (HTTP $status)"
             exit 1
           fi
 
-          promote() {
-            local key="$1" value body promote_status
-            value=$(jq -r --arg key "$key" '[.envs[] | select(.key == $key)] | first | .value // empty' /tmp/preview-env.json)
-            if [ -z "$value" ]; then
-              echo "::error::Required branch-scoped Preview variable $key was not found"
-              exit 1
-            fi
-            echo "::add-mask::$value"
+          branch_value() {
+            local key="$1"
+            jq -r --arg key "$key" --arg branch "$SOURCE_PREVIEW_BRANCH" '
+              [.envs[]
+                | select(
+                    .key == $key
+                    and .gitBranch == $branch
+                    and ((.target // []) | index("preview"))
+                  )
+              ]
+              | sort_by(.updatedAt // .createdAt // 0) | last
+              | .value // empty
+            ' /tmp/preview-env.json
+          }
+
+          global_preview_value() {
+            local key="$1"
+            jq -r --arg key "$key" '
+              [.envs[]
+                | select(
+                    .key == $key
+                    and ((.gitBranch // "") == "")
+                    and ((.target // []) | index("preview"))
+                  )
+              ]
+              | sort_by(.updatedAt // .createdAt // 0) | last
+              | .value // empty
+            ' /tmp/preview-env.json
+          }
+
+          github_token=$(branch_value GITHUB_TOKEN)
+          if [ -z "$github_token" ]; then
+            github_token=$(global_preview_value GITHUB_TOKEN)
+          fi
+          action_key=$(branch_value UAL_ACTION_API_KEY)
+
+          if [ -z "$github_token" ]; then
+            echo "::error::Permanent Preview GITHUB_TOKEN was not found"
+            exit 1
+          fi
+          if [ -z "$action_key" ]; then
+            echo "::error::Branch-scoped Preview UAL_ACTION_API_KEY was not found"
+            exit 1
+          fi
+
+          echo "::add-mask::$github_token"
+          echo "::add-mask::$action_key"
+
+          promote_value() {
+            local key="$1" value="$2" body promote_status
             body=$(jq -n --arg key "$key" --arg value "$value" '{key:$key,value:$value,type:"encrypted",target:["production"]}')
             promote_status=$(curl -sS -o /tmp/promote-result.json -w '%{http_code}' -X POST \
               "$api/v10/projects/$VERCEL_PROJECT_ID/env?upsert=true&teamId=$VERCEL_TEAM_ID" \
@@ -81,13 +122,11 @@ jobs:
               echo "::error::Unable to promote $key to Production (HTTP $promote_status)"
               exit 1
             fi
-            if [ "$key" = 'UAL_ACTION_API_KEY' ]; then
-              echo "PRODUCTION_ACTION_KEY=$value" >> "$GITHUB_ENV"
-            fi
           }
 
-          promote GITHUB_TOKEN
-          promote UAL_ACTION_API_KEY
+          promote_value GITHUB_TOKEN "$github_token"
+          promote_value UAL_ACTION_API_KEY "$action_key"
+          echo "PRODUCTION_ACTION_KEY=$action_key" >> "$GITHUB_ENV"
           rm -f /tmp/preview-env.json /tmp/promote-result.json
 
       - name: Deploy merged main to Production
