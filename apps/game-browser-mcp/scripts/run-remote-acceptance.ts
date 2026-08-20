@@ -44,6 +44,34 @@ function point(value: any): { x: number; y: number } {
   return { x: Number(candidate.x), y: Number(candidate.y) };
 }
 
+function safeDiagnostic(text: string): string {
+  return text
+    .replace(/rgc1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[registration-capability-redacted]')
+    .slice(0, 2048);
+}
+
+export function decodeRemoteToolResult(name: string, result: any): any {
+  const textPart = result?.content?.find((part: any) => part?.type === 'text');
+  const text = textPart?.type === 'text' && typeof textPart.text === 'string' ? textPart.text : '';
+
+  if (result?.isError) {
+    if (!text) throw new Error(`${name}: MCP tool returned an error without diagnostic text`);
+    try {
+      throw new Error(`${name}: ${JSON.stringify(JSON.parse(text))}`);
+    } catch (error) {
+      if (error instanceof SyntaxError) throw new Error(`${name}: ${safeDiagnostic(text)}`);
+      throw error;
+    }
+  }
+
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`${name}: expected JSON MCP evidence`);
+  }
+}
+
 export async function runAcceptanceSequence(call: ToolCaller, config: AcceptanceConfig): Promise<AcceptanceEvidence> {
   const started = await call('game_session_start', {
     target_registration_id: config.targetRegistrationId,
@@ -144,10 +172,7 @@ export function createRemoteToolCaller(url: string, bearerToken?: string): ToolC
     try {
       await client.connect(transport);
       const result = await client.callTool({ name, arguments: args });
-      const text = result.content?.find((part) => part.type === 'text');
-      const payload = text?.type === 'text' ? JSON.parse(text.text) : {};
-      if (result.isError) throw new Error(`${name}: ${JSON.stringify(payload)}`);
-      return payload;
+      return decodeRemoteToolResult(name, result);
     } finally {
       await client.close();
     }
