@@ -10,11 +10,12 @@ const services = {
 };
 
 const BASE_ENV = {
-  UPSTASH_REDIS_REST_URL: 'https://redis.example.com', UPSTASH_REDIS_REST_TOKEN: 'redis-token',
   VERCEL_API_TOKEN: 'vercel-token', TARGET_PROJECT_ID: 'project-1', TARGET_REPOSITORY_OWNER: 'owner',
   TARGET_REPOSITORY_NAME: 'repo', TARGET_ENTRY_PATH: '/fixture/', APPROVED_DEPLOYMENT_HOST_PATTERNS: '*.vercel.app',
   APPROVED_DEPENDENCY_HOSTS: '', APPROVED_REDIRECT_HOSTS: '', AGENT_BROWSER_SNAPSHOT_ID: 'snap_1',
-  REGISTRATION_CONTROL_TOKEN: 'registration-control-secret-123', OWNER_BINDING_SECRET: 'owner-binding-secret-with-adequate-length',
+  REGISTRATION_CONTROL_TOKEN: 'registration-control-secret-123',
+  REGISTRATION_CAPABILITY_SECRET: 'registration-capability-secret-with-adequate-length',
+  OWNER_BINDING_SECRET: 'owner-binding-secret-with-adequate-length',
   PRINCIPAL_AUDIENCE: 'game-browser-mcp', RUNTIME_ALLOWED_HOSTS: '127.0.0.1,localhost',
 };
 
