@@ -27,7 +27,7 @@ jobs:
           set -euo pipefail
           [ -n "${VERCEL_TOKEN:-}" ] || { echo "::error::VERCEL_TOKEN is required"; exit 1; }
 
-      - name: Load masked Production Action key
+      - name: Resolve masked active Production Action key
         shell: bash
         run: |
           set -euo pipefail
@@ -36,7 +36,8 @@ jobs:
           status=$(curl -sS -o /tmp/project-env.json -w '%{http_code}' -H "$auth" \
             "$api/v10/projects/$VERCEL_PROJECT_ID/env?decrypt=true&teamId=$VERCEL_TEAM_ID")
           [ "$status" = '200' ] || { echo "::error::Unable to read Vercel Production environment (HTTP $status)"; exit 1; }
-          action_key=$(jq -r '
+
+          jq -c '
             [.envs[]
               | select(
                   .key == "UAL_ACTION_API_KEY"
@@ -44,13 +45,41 @@ jobs:
                   and ((.target // []) | index("production"))
                 )
             ]
-            | sort_by(.updatedAt // .createdAt // 0) | last
-            | .value // empty
-          ' /tmp/project-env.json)
-          [ -n "$action_key" ] || { echo "::error::Production UAL_ACTION_API_KEY was not found"; exit 1; }
-          echo "::add-mask::$action_key"
-          echo "PRODUCTION_ACTION_KEY=$action_key" >> "$GITHUB_ENV"
-          rm -f /tmp/project-env.json
+            | sort_by(.updatedAt // .createdAt // 0)
+            | .[]
+            | {id:(.id // ""), updatedAt:(.updatedAt // .createdAt // 0), value:(.value // "")}
+          ' /tmp/project-env.json > /tmp/action-keys.jsonl
+
+          key_count=$(wc -l < /tmp/action-keys.jsonl | tr -d ' ')
+          [ "$key_count" -gt 0 ] || { echo "::error::No Production UAL_ACTION_API_KEY records were found"; exit 1; }
+          echo "Found $key_count Production Action key record(s); testing masked values without disclosure."
+
+          match_index=''
+          index=0
+          while IFS= read -r record; do
+            index=$((index + 1))
+            value=$(printf '%s' "$record" | jq -r '.value')
+            [ -n "$value" ] || continue
+            echo "::add-mask::$value"
+            status=$(curl -sS -o /tmp/candidate-skill.json -w '%{http_code}' \
+              -H "Authorization: Bearer $value" \
+              "$PRODUCTION_URL/skills/autonomous-dev-loop")
+            if [ "$status" = '200' ]; then
+              match_index="$index"
+              echo "PRODUCTION_ACTION_KEY=$value" >> "$GITHUB_ENV"
+              cp /tmp/candidate-skill.json /tmp/skill.json
+              break
+            fi
+            if [ "$status" != '401' ]; then
+              echo "Candidate Action key record $index reached the protected endpoint but returned HTTP $status."
+            fi
+          done < /tmp/action-keys.jsonl
+
+          [ -n "$match_index" ] || { echo "::error::No stored Production UAL_ACTION_API_KEY matches the deployed function"; exit 1; }
+          echo "Active deployed Action key matches stored Production record index $match_index of $key_count."
+          echo "ACTIVE_KEY_INDEX=$match_index" >> "$GITHUB_ENV"
+          echo "ACTION_KEY_COUNT=$key_count" >> "$GITHUB_ENV"
+          rm -f /tmp/project-env.json /tmp/action-keys.jsonl /tmp/candidate-skill.json
 
       - name: Verify stable Production Action end to end
         shell: bash
@@ -83,7 +112,9 @@ jobs:
           jq -n \
             --arg stableUrl "$PRODUCTION_URL" \
             --arg blobSha "$(jq -r '.blobSha' /tmp/skill.json)" \
-            '{stableUrl:$stableUrl,health:true,openapi:true,unauthorizedRejected:true,canonicalSkillRetrieved:true,blobSha:$blobSha}' \
+            --arg activeKeyIndex "$ACTIVE_KEY_INDEX" \
+            --arg actionKeyCount "$ACTION_KEY_COUNT" \
+            '{stableUrl:$stableUrl,health:true,openapi:true,unauthorizedRejected:true,canonicalSkillRetrieved:true,blobSha:$blobSha,activeKeyIndex:($activeKeyIndex|tonumber),actionKeyCount:($actionKeyCount|tonumber)}' \
             > gpt-action-final-smoke-evidence.json
 
       - uses: actions/upload-artifact@v4
