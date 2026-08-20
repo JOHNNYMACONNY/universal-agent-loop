@@ -50,7 +50,7 @@ jobs:
           test -n "$token"
           echo "::add-mask::$token"
           echo "VERCEL_OIDC_TOKEN=$token" >> "$GITHUB_ENV"
-      - name: Bisect Sandbox.create configuration
+      - name: Bisect denied CIDR groups
         working-directory: apps/game-browser-mcp
         shell: bash
         run: |
@@ -61,12 +61,11 @@ jobs:
           const snapshotId = process.env.SNAPSHOT_ID;
           const host = process.env.PROBE_HOST;
           const run = process.env.GITHUB_RUN_ID;
-          const ipv4Deny = [
-            '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
-            '169.254.0.0/16', '172.16.0.0/12', '192.0.0.0/24', '192.0.2.0/24',
-            '192.168.0.0/16', '198.18.0.0/15', '198.51.100.0/24', '203.0.113.0/24',
-            '224.0.0.0/4', '240.0.0.0/4',
-          ];
+          const critical = ['10.0.0.0/8', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12', '192.168.0.0/16'];
+          const cgnat = ['100.64.0.0/10'];
+          const zeroProtocol = ['0.0.0.0/8', '192.0.0.0/24'];
+          const docsTest = ['192.0.2.0/24', '198.18.0.0/15', '198.51.100.0/24', '203.0.113.0/24'];
+          const multicastReserved = ['224.0.0.0/4', '240.0.0.0/4'];
 
           function diagnostic(error) {
             const status = error?.response?.status;
@@ -89,23 +88,30 @@ jobs:
             }
           }
 
-          async function probe(label, options) {
+          async function probe(label, deny) {
             const name = `diag-${run}-${label}`.toLowerCase().slice(0, 90);
             let sandbox;
             try {
-              sandbox = await Sandbox.create({ name, ...options });
-              console.log(`PROBE ${label}: PASS`);
+              sandbox = await Sandbox.create({
+                name,
+                source: { type: 'snapshot', snapshotId },
+                persistent: true,
+                snapshotExpiration: 86_400_000,
+                timeout: 900_000,
+                tags: { service: 'game-browser-mcp' },
+                networkPolicy: { allow: [host], subnets: { deny } },
+              });
+              console.log(`PROBE ${label}: PASS count=${deny.length}`);
             } catch (error) {
-              console.log(`PROBE ${label}: FAIL ${diagnostic(error) || 'no-provider-diagnostic'}`);
+              console.log(`PROBE ${label}: FAIL count=${deny.length} ${diagnostic(error) || 'no-provider-diagnostic'}`);
             } finally {
               await cleanup(name, sandbox);
             }
           }
 
-          const base = { source: { type: 'snapshot', snapshotId } };
-          await probe('a-snapshot', { ...base, persistent: false });
-          await probe('b-persistent', { ...base, persistent: true, snapshotExpiration: 86_400_000 });
-          await probe('c-timeout-tags', { ...base, persistent: true, snapshotExpiration: 86_400_000, timeout: 900_000, tags: { service: 'game-browser-mcp' } });
-          await probe('d-domain-policy', { ...base, persistent: true, snapshotExpiration: 86_400_000, timeout: 900_000, tags: { service: 'game-browser-mcp' }, networkPolicy: { allow: [host] } });
-          await probe('e-subnet-policy', { ...base, persistent: true, snapshotExpiration: 86_400_000, timeout: 900_000, tags: { service: 'game-browser-mcp' }, networkPolicy: { allow: [host], subnets: { deny: ipv4Deny } } });
+          await probe('p1-critical', critical);
+          await probe('p2-cgnat', [...critical, ...cgnat]);
+          await probe('p3-zero-protocol', [...critical, ...cgnat, ...zeroProtocol]);
+          await probe('p4-docs-test', [...critical, ...cgnat, ...zeroProtocol, ...docsTest]);
+          await probe('p5-multicast-reserved', [...critical, ...cgnat, ...zeroProtocol, ...docsTest, ...multicastReserved]);
           NODE
