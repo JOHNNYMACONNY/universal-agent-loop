@@ -32,8 +32,8 @@ function hostMatchesPattern(host: string, pattern: string): boolean {
 
 export class RegistrationService {
   readonly #verifier: DeploymentVerifier;
-  readonly #store?: RegistrationStore;
-  readonly #codec?: RegistrationCapabilityCodec;
+  readonly #store: RegistrationStore | undefined;
+  readonly #codec: RegistrationCapabilityCodec | undefined;
   readonly #trust: RuntimeConfig['trust'];
   readonly #now: () => Date;
   readonly #idFactory: () => string;
