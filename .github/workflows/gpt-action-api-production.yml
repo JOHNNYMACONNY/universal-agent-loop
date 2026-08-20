@@ -2,6 +2,8 @@ name: gpt-action-api-production
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -12,6 +14,10 @@ concurrency:
 
 jobs:
   deploy-and-verify:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+       github.event.head_commit.message == 'chore: trigger one-shot GPT Action production')
     runs-on: ubuntu-latest
     env:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
