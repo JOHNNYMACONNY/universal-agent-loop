@@ -26,7 +26,7 @@ jobs:
           set -euo pipefail
           test -n "${VERCEL_TOKEN:-}"
           status=$(curl -sS -o /tmp/snapshots.json -w '%{http_code}' \
-            "https://api.vercel.com/v2/sandboxes/snapshots?project=$VERCEL_PROJECT_ID&teamId=$VERCEL_TEAM_ID&limit=100&sortOrder=asc" \
+            "https://api.vercel.com/v2/sandboxes/snapshots?project=$VERCEL_PROJECT_ID&teamId=$VERCEL_TEAM_ID&limit=50&sortOrder=asc" \
             -H "Authorization: Bearer $VERCEL_TOKEN")
           if [ "$status" != "200" ]; then
             echo "::error::Unable to list dedicated-project Sandbox snapshots (HTTP $status)"
