@@ -17,15 +17,16 @@ test('GPT Action production workflow verifies the persistent Production credenti
   assert.doesNotMatch(workflow, /printf\s+[^\n]*\$(github_token|action_key)/);
 });
 
-test('production keeps the Action bearer key promoted from Preview but requires a distinct persistent Production GitHub token', async () => {
+test('production uses persistent Production values for both runtime credentials and validates private GitHub access before deploy', async () => {
   const workflow = await readFile(workflowUrl, 'utf8');
 
-  assert.match(workflow, /global_preview_value UAL_ACTION_API_KEY/);
+  assert.match(workflow, /production_value UAL_ACTION_API_KEY/);
   assert.match(workflow, /production_value GITHUB_TOKEN/);
-  assert.doesNotMatch(workflow, /global_preview_value GITHUB_TOKEN/);
-  assert.doesNotMatch(workflow, /promote_value GITHUB_TOKEN/);
+  assert.doesNotMatch(workflow, /global_preview_value/);
+  assert.doesNotMatch(workflow, /promote_value/);
   assert.match(workflow, /api\.github\.com\/repos\/JOHNNYMACONNY\/universal-agent-loop\/contents\/skills\/autonomous-dev-loop\/SKILL\.md\?ref=main/);
   assert.match(workflow, /Persistent Production GITHUB_TOKEN/);
+  assert.match(workflow, /Persistent Production UAL_ACTION_API_KEY/);
 });
 
 test('production workflow is dispatch-only after the authorized one-shot promotion', async () => {
