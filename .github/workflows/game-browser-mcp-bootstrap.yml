@@ -169,12 +169,25 @@ jobs:
               "$api/v1/security/firewall/config?projectId=$VERCEL_PROJECT_ID&teamId=$VERCEL_TEAM_ID"
           }
 
+          verify_waf() {
+            apps/game-browser-mcp/node_modules/.bin/tsx \
+              apps/game-browser-mcp/scripts/verify-waf-rule.ts \
+              /tmp/waf-config.json > /tmp/verified-waf.json
+          }
+
+          has_named_active_rule() {
+            jq -e --arg name "$rule_name" '.active.rules // [] | any(.name == $name)' /tmp/waf-config.json >/dev/null
+          }
+
           waf_http=$(inspect_waf)
-          if [ "$waf_http" = "200" ] && jq -e --arg name "$rule_name" '.active.rules // [] | any(.name == $name)' /tmp/waf-config.json >/dev/null; then
-            waf_status="configured"
-          elif is_platform_limit "$waf_http" /tmp/waf-config.json; then
+          if is_platform_limit "$waf_http" /tmp/waf-config.json; then
             waf_status="platform_limited"
             limitation_reason="Vercel WAF rate limiting is unavailable on the current plan; no billing change was authorized or attempted."
+          elif [ "$waf_http" = "200" ] && verify_waf; then
+            waf_status="configured"
+          elif [ "$waf_http" = "200" ] && has_named_active_rule; then
+            echo "::error::Existing active Vercel WAF rule has the required name but its condition or rate-limit configuration has drifted"
+            exit 1
           elif [ "$waf_http" = "200" ] || [ "$waf_http" = "404" ]; then
             export VERCEL_ORG_ID="$VERCEL_TEAM_ID"
             export VERCEL_PROJECT_ID="$VERCEL_PROJECT_ID"
@@ -204,8 +217,8 @@ jobs:
               npx -y vercel@59.1.4 firewall publish --yes --token "$VERCEL_TOKEN" --scope "$VERCEL_TEAM_SLUG" \
                 >/tmp/waf-publish.log 2>&1
               verify_http=$(inspect_waf)
-              if [ "$verify_http" != "200" ] || ! jq -e --arg name "$rule_name" '.active.rules // [] | any(.name == $name)' /tmp/waf-config.json >/dev/null; then
-                echo "::error::Vercel coarse MCP rate limit was not visible in the active firewall configuration after publish"
+              if [ "$verify_http" != "200" ] || ! verify_waf; then
+                echo "::error::Published Vercel coarse MCP rate limit does not match the required active configuration"
                 exit 1
               fi
               waf_status="configured"
@@ -215,25 +228,32 @@ jobs:
             exit 1
           fi
 
-          jq -n \
-            --arg expectedCommitSha "$CANDIDATE_SHA" \
-            --arg status "$waf_status" \
-            --arg ruleName "$rule_name" \
-            --arg limitationReason "$limitation_reason" \
-            '{
-              expectedCommitSha:$expectedCommitSha,
-              coarseRateLimit:{
-                provider:"vercel-waf",
-                status:$status,
-                ruleName:$ruleName,
-                pathPrefix:"/mcp",
-                windowSeconds:60,
-                requestsPerWindow:600,
-                key:"ip",
-                algorithm:"fixed_window",
-                limitationReason:(if $limitationReason == "" then null else $limitationReason end)
-              }
-            }' > "$metadata"
+          if [ "$waf_status" = "configured" ]; then
+            jq -n \
+              --arg expectedCommitSha "$CANDIDATE_SHA" \
+              --slurpfile verified /tmp/verified-waf.json \
+              '{expectedCommitSha:$expectedCommitSha,coarseRateLimit:$verified[0]}' > "$metadata"
+          else
+            jq -n \
+              --arg expectedCommitSha "$CANDIDATE_SHA" \
+              --arg ruleName "$rule_name" \
+              --arg limitationReason "$limitation_reason" \
+              '{
+                expectedCommitSha:$expectedCommitSha,
+                coarseRateLimit:{
+                  provider:"vercel-waf",
+                  status:"platform_limited",
+                  ruleName:$ruleName,
+                  ruleId:null,
+                  pathPrefix:"/mcp",
+                  windowSeconds:60,
+                  requestsPerWindow:600,
+                  key:"ip",
+                  algorithm:"fixed_window",
+                  limitationReason:$limitationReason
+                }
+              }' > "$metadata"
+          fi
           echo "waf_status=$waf_status" >> "$GITHUB_OUTPUT"
 
       - name: Generate ephemeral runtime bootstrap secrets
