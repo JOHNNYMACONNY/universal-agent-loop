@@ -1,0 +1,33 @@
+name: generate-game-browser-lockfile
+
+on:
+  push:
+    branches:
+      - chatgpt/autonomous-dev-loop
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/autonomous-dev-loop
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Generate exact child-package lockfile
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund --prefix apps/game-browser-mcp
+      - name: Commit lockfile if changed
+        run: |
+          if git diff --quiet -- apps/game-browser-mcp/package-lock.json && git ls-files --error-unmatch apps/game-browser-mcp/package-lock.json >/dev/null 2>&1; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/game-browser-mcp/package-lock.json
+          git commit -m "build: lock remote browser runtime dependencies"
+          git push origin HEAD:chatgpt/autonomous-dev-loop
