@@ -1,0 +1,309 @@
+name: game-browser-mcp-bootstrap
+
+on:
+  pull_request:
+    types: [edited]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap-and-accept:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.actor == 'JOHNNYMACONNY' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       contains(github.event.pull_request.body || '', '[run-game-browser-bootstrap]'))
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_TEAM_ID: team_3LfEMNVsAEbXKLoCrnzXQzrF
+      VERCEL_PROJECT_NAME: ual-game-browser-mcp
+      TARGET_REPOSITORY_OWNER: JOHNNYMACONNY
+      TARGET_REPOSITORY_NAME: universal-agent-loop
+      TARGET_BRANCH: chatgpt/autonomous-dev-loop
+      PRINCIPAL_AUDIENCE: game-browser-mcp
+      AGENT_BROWSER_VERSION: 0.34.0
+      REMOTE_EVIDENCE_PATH: apps/game-browser-mcp/remote-acceptance-evidence.json
+    steps:
+      - name: Resolve exact candidate
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            sha='${{ github.event.pull_request.head.sha }}'
+          else
+            sha='${{ github.sha }}'
+          fi
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid candidate SHA" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.candidate.outputs.sha }}
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/game-browser-mcp/package-lock.json
+
+      - name: Require the single bootstrap secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${VERCEL_TOKEN:-}" ]; then
+            echo "::error::VERCEL_TOKEN repository secret is required for the Vercel control-plane bootstrap"
+            exit 1
+          fi
+
+      - name: Install runtime tooling
+        run: npm ci --prefix apps/game-browser-mcp --no-audit --no-fund
+
+      - name: Create or resolve dedicated Git-linked Vercel project
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.vercel.com"
+          auth="Authorization: Bearer $VERCEL_TOKEN"
+          get_url="$api/v9/projects/$VERCEL_PROJECT_NAME?teamId=$VERCEL_TEAM_ID"
+          status=$(curl -sS -o /tmp/project.json -w '%{http_code}' -H "$auth" "$get_url")
+          if [ "$status" = "404" ]; then
+            body=$(jq -n \
+              --arg name "$VERCEL_PROJECT_NAME" \
+              --arg repo "$TARGET_REPOSITORY_OWNER/$TARGET_REPOSITORY_NAME" \
+              '{
+                name:$name,
+                framework:null,
+                rootDirectory:"apps/game-browser-mcp",
+                installCommand:"npm ci --no-audit --no-fund",
+                buildCommand:"npm run build",
+                previewDeploymentsDisabled:false,
+                publicSource:false,
+                ssoProtection:null,
+                gitRepository:{type:"github",repo:$repo}
+              }')
+            status=$(curl -sS -o /tmp/project.json -w '%{http_code}' \
+              -X POST "$api/v11/projects?teamId=$VERCEL_TEAM_ID" \
+              -H "$auth" -H 'Content-Type: application/json' --data "$body")
+          fi
+          if [ "$status" != "200" ] && [ "$status" != "201" ]; then
+            echo "::error::Unable to create/resolve dedicated Vercel project (HTTP $status)"
+            jq -r '.error.code // empty, .error.message // empty' /tmp/project.json || true
+            exit 1
+          fi
+          project_id=$(jq -r '.id // empty' /tmp/project.json)
+          if [[ ! "$project_id" =~ ^prj_ ]]; then
+            echo "::error::Vercel project response did not contain a project ID"
+            exit 1
+          fi
+          echo "project_id=$project_id" >> "$GITHUB_OUTPUT"
+          echo "VERCEL_PROJECT_ID=$project_id" >> "$GITHUB_ENV"
+
+      - name: Generate ephemeral runtime bootstrap secrets
+        id: secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in REGISTRATION_CONTROL_TOKEN REGISTRATION_CAPABILITY_SECRET OWNER_BINDING_SECRET; do
+            value=$(openssl rand -hex 32)
+            echo "::add-mask::$value"
+            printf '%s=%s\n' "$name" "$value" >> "$GITHUB_ENV"
+          done
+
+      - name: Upsert preview runtime configuration
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          api="https://api.vercel.com"
+          auth="Authorization: Bearer $VERCEL_TOKEN"
+          upsert_env() {
+            local key="$1" value="$2" kind="$3"
+            local body status
+            body=$(jq -n --arg key "$key" --arg value "$value" --arg type "$kind" \
+              '{key:$key,value:$value,type:$type,target:["preview"]}')
+            status=$(curl -sS -o /tmp/env-result.json -w '%{http_code}' \
+              -X POST "$api/v10/projects/$VERCEL_PROJECT_ID/env?upsert=true&teamId=$VERCEL_TEAM_ID" \
+              -H "$auth" -H 'Content-Type: application/json' --data "$body")
+            if [ "$status" != "200" ] && [ "$status" != "201" ]; then
+              echo "::error::Failed to upsert $key (HTTP $status)"
+              jq -r '.error.code // empty, .error.message // empty' /tmp/env-result.json || true
+              exit 1
+            fi
+          }
+          upsert_env VERCEL_API_TOKEN "$VERCEL_TOKEN" encrypted
+          upsert_env VERCEL_TEAM_ID "$VERCEL_TEAM_ID" plain
+          upsert_env TARGET_PROJECT_ID "$VERCEL_PROJECT_ID" plain
+          upsert_env TARGET_REPOSITORY_OWNER "$TARGET_REPOSITORY_OWNER" plain
+          upsert_env TARGET_REPOSITORY_NAME "$TARGET_REPOSITORY_NAME" plain
+          upsert_env TARGET_ENTRY_PATH '/fixture/' plain
+          upsert_env APPROVED_DEPLOYMENT_HOST_PATTERNS '*.vercel.app' plain
+          upsert_env APPROVED_DEPENDENCY_HOSTS '' plain
+          upsert_env APPROVED_REDIRECT_HOSTS '' plain
+          upsert_env REGISTRATION_CONTROL_TOKEN "$REGISTRATION_CONTROL_TOKEN" encrypted
+          upsert_env REGISTRATION_CAPABILITY_SECRET "$REGISTRATION_CAPABILITY_SECRET" encrypted
+          upsert_env OWNER_BINDING_SECRET "$OWNER_BINDING_SECRET" encrypted
+          upsert_env PRINCIPAL_AUDIENCE "$PRINCIPAL_AUDIENCE" plain
+
+      - name: Mint project-scoped OIDC token for Sandbox bootstrap
+        id: oidc
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=$(curl -sS -o /tmp/oidc.json -w '%{http_code}' \
+            -X POST "https://api.vercel.com/v1/projects/$VERCEL_PROJECT_ID/token?teamId=$VERCEL_TEAM_ID" \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H 'Content-Type: application/json' \
+            --data '{"source":"github-actions:game-browser-bootstrap"}')
+          if [ "$status" != "200" ]; then
+            echo "::error::Unable to mint project OIDC token for Sandbox bootstrap (HTTP $status)"
+            exit 1
+          fi
+          token=$(jq -r '.token // empty' /tmp/oidc.json)
+          if [ -z "$token" ]; then
+            echo "::error::Project OIDC response was empty"
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          echo "VERCEL_OIDC_TOKEN=$token" >> "$GITHUB_ENV"
+
+      - name: Build pinned browser Sandbox snapshot
+        id: snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          snapshot_id=$(node --import tsx apps/game-browser-mcp/scripts/create-browser-snapshot.ts | tail -n 1)
+          if [[ ! "$snapshot_id" =~ ^snap_ ]]; then
+            echo "::error::Browser snapshot builder did not return a snapshot ID"
+            exit 1
+          fi
+          echo "snapshot_id=$snapshot_id" >> "$GITHUB_OUTPUT"
+
+      - name: Persist snapshot identity to preview runtime
+        shell: bash
+        env:
+          SNAPSHOT_ID: ${{ steps.snapshot.outputs.snapshot_id }}
+        run: |
+          set -euo pipefail
+          body=$(jq -n --arg value "$SNAPSHOT_ID" '{key:"AGENT_BROWSER_SNAPSHOT_ID",value:$value,type:"plain",target:["preview"]}')
+          status=$(curl -sS -o /tmp/snapshot-env.json -w '%{http_code}' \
+            -X POST "https://api.vercel.com/v10/projects/$VERCEL_PROJECT_ID/env?upsert=true&teamId=$VERCEL_TEAM_ID" \
+            -H "Authorization: Bearer $VERCEL_TOKEN" -H 'Content-Type: application/json' --data "$body")
+          if [ "$status" != "200" ] && [ "$status" != "201" ]; then
+            echo "::error::Failed to persist AGENT_BROWSER_SNAPSHOT_ID (HTTP $status)"
+            exit 1
+          fi
+
+      - name: Create exact-commit Git-source preview deployment
+        id: deploy
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          body=$(jq -n \
+            --arg name "$VERCEL_PROJECT_NAME" \
+            --arg project "$VERCEL_PROJECT_ID" \
+            --arg org "$TARGET_REPOSITORY_OWNER" \
+            --arg repo "$TARGET_REPOSITORY_NAME" \
+            --arg ref "$TARGET_BRANCH" \
+            --arg sha "$CANDIDATE_SHA" \
+            '{name:$name,project:$project,gitSource:{type:"github",org:$org,repo:$repo,ref:$ref,sha:$sha}}')
+          status=$(curl -sS -o /tmp/deploy.json -w '%{http_code}' \
+            -X POST "https://api.vercel.com/v13/deployments?teamId=$VERCEL_TEAM_ID" \
+            -H "Authorization: Bearer $VERCEL_TOKEN" -H 'Content-Type: application/json' --data "$body")
+          if [ "$status" != "200" ] && [ "$status" != "201" ]; then
+            echo "::error::Exact-commit preview deployment request failed (HTTP $status)"
+            jq -r '.error.code // empty, .error.message // empty' /tmp/deploy.json || true
+            exit 1
+          fi
+          deployment_id=$(jq -r '.id // empty' /tmp/deploy.json)
+          if [[ ! "$deployment_id" =~ ^dpl_ ]]; then
+            echo "::error::Deployment response did not contain immutable deployment ID"
+            exit 1
+          fi
+          for attempt in $(seq 1 90); do
+            curl -sS \
+              -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v13/deployments/$deployment_id?teamId=$VERCEL_TEAM_ID&withGitRepoInfo=true" \
+              -o /tmp/deployment-current.json
+            state=$(jq -r '.readyState // .status // .state // empty' /tmp/deployment-current.json)
+            if [ "$state" = "READY" ]; then break; fi
+            if [ "$state" = "ERROR" ] || [ "$state" = "CANCELED" ]; then
+              echo "::error::Vercel deployment ended in state $state"
+              exit 1
+            fi
+            sleep 4
+          done
+          state=$(jq -r '.readyState // .status // .state // empty' /tmp/deployment-current.json)
+          if [ "$state" != "READY" ]; then
+            echo "::error::Vercel deployment did not become READY"
+            exit 1
+          fi
+          meta_sha=$(jq -r '.meta.githubCommitSha // .gitSource.sha // empty' /tmp/deployment-current.json)
+          meta_org=$(jq -r '.meta.githubCommitOrg // empty' /tmp/deployment-current.json)
+          meta_repo=$(jq -r '.meta.githubCommitRepo // empty' /tmp/deployment-current.json)
+          project_id=$(jq -r '.projectId // empty' /tmp/deployment-current.json)
+          if [ "$meta_sha" != "$CANDIDATE_SHA" ] || [ "$meta_org" != "$TARGET_REPOSITORY_OWNER" ] || [ "$meta_repo" != "$TARGET_REPOSITORY_NAME" ] || [ "$project_id" != "$VERCEL_PROJECT_ID" ]; then
+            echo "::error::Provider deployment provenance does not match exact GitHub candidate"
+            exit 1
+          fi
+          deployment_url="https://$(jq -r '.url' /tmp/deployment-current.json)"
+          echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
+          echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
+
+      - name: Require public preview runtime health
+        shell: bash
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment_url }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 20); do
+            status=$(curl -sS -o /tmp/health.json -w '%{http_code}' "$DEPLOYMENT_URL/healthz" || true)
+            if [ "$status" = "200" ] && [ "$(jq -r '.ok // false' /tmp/health.json 2>/dev/null || true)" = "true" ]; then exit 0; fi
+            sleep 3
+          done
+          echo "::error::Preview runtime health is not publicly reachable; deployment protection/configuration is blocking live acceptance"
+          exit 1
+
+      - name: Register exact deployment capability
+        id: registration
+        shell: bash
+        env:
+          REMOTE_RUNTIME_BASE_URL: ${{ steps.deploy.outputs.deployment_url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
+          EXPECTED_COMMIT_SHA: ${{ steps.candidate.outputs.sha }}
+        run: node --import tsx apps/game-browser-mcp/scripts/register-vercel-deployment.ts
+
+      - name: Issue short-lived acceptance principal
+        id: principal
+        shell: bash
+        run: node --import tsx apps/game-browser-mcp/scripts/issue-test-principal.ts
+
+      - name: Run provider-backed Canvas gameplay acceptance
+        shell: bash
+        env:
+          REMOTE_MCP_URL: ${{ steps.deploy.outputs.deployment_url }}/mcp
+          REMOTE_MCP_BEARER_TOKEN: ${{ steps.principal.outputs.bearer_token }}
+          TARGET_REGISTRATION_ID: ${{ steps.registration.outputs.target_registration_id }}
+          EXPECTED_COMMIT_SHA: ${{ steps.candidate.outputs.sha }}
+        run: npm run test:remote --prefix apps/game-browser-mcp
+
+      - name: Upload exact-commit acceptance evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: game-browser-mcp-live-${{ steps.candidate.outputs.sha }}
+          path: apps/game-browser-mcp/remote-acceptance-evidence.json
+          if-no-files-found: warn
+          retention-days: 7
