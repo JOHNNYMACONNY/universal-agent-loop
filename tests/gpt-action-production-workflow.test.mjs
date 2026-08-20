@@ -4,13 +4,12 @@ import test from 'node:test';
 
 const workflowUrl = new URL('../.github/workflows/gpt-action-api-production.yml', import.meta.url);
 
-test('GPT Action production workflow promotes existing Preview secrets without exposing them and verifies production', async () => {
+test('GPT Action production workflow verifies the persistent Production credentials and stable API without exposing values', async () => {
   const workflow = await readFile(workflowUrl, 'utf8');
 
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /decrypt=true/);
   assert.match(workflow, /::add-mask::/);
-  assert.match(workflow, /target:\["production"\]/);
   assert.match(workflow, /vercel@59\.1\.4 deploy --prod/);
   assert.match(workflow, /https:\/\/ual-gpt-action-api\.vercel\.app/);
   assert.match(workflow, /\/skills\/autonomous-dev-loop/);
@@ -18,31 +17,23 @@ test('GPT Action production workflow promotes existing Preview secrets without e
   assert.doesNotMatch(workflow, /printf\s+[^\n]*\$(github_token|action_key)/);
 });
 
-test('production promotion uses the newest global Preview values written by the preview workflow for both runtime credentials', async () => {
+test('production keeps the Action bearer key promoted from Preview but requires a distinct persistent Production GitHub token', async () => {
   const workflow = await readFile(workflowUrl, 'utf8');
 
-  assert.match(workflow, /\/tmp\/preview-env\.json/);
-  assert.match(workflow, /global_preview_value\(\)/);
-  assert.match(workflow, /sort_by\(\.updatedAt \/\/ \.createdAt \/\/ 0\) \| last/);
   assert.match(workflow, /global_preview_value UAL_ACTION_API_KEY/);
-  assert.match(workflow, /global_preview_value GITHUB_TOKEN/);
-  assert.doesNotMatch(workflow, /branch_env_value/);
-  assert.doesNotMatch(workflow, /gitBranch=\$encoded_branch/);
+  assert.match(workflow, /production_value GITHUB_TOKEN/);
+  assert.doesNotMatch(workflow, /global_preview_value GITHUB_TOKEN/);
+  assert.doesNotMatch(workflow, /promote_value GITHUB_TOKEN/);
+  assert.match(workflow, /api\.github\.com\/repos\/JOHNNYMACONNY\/universal-agent-loop\/contents\/skills\/autonomous-dev-loop\/SKILL\.md\?ref=main/);
+  assert.match(workflow, /Persistent Production GITHUB_TOKEN/);
 });
 
-test('one-shot production trigger only runs on the exact authorized merge message', async () => {
+test('production workflow is dispatch-only after the authorized one-shot promotion', async () => {
   const workflow = await readFile(workflowUrl, 'utf8');
 
-  assert.match(workflow, /push:\s*\n\s+branches:\s*\[main\]/);
-  assert.match(workflow, /github\.event_name == 'workflow_dispatch'/);
-  assert.match(workflow, /github\.event\.head_commit\.message == 'chore: trigger one-shot GPT Action production'/);
-});
-
-test('authorized same-repo PR edit can trigger the production run without exposing secrets', async () => {
-  const workflow = await readFile(workflowUrl, 'utf8');
-
-  assert.match(workflow, /pull_request:\s*\n\s+types:\s*\[edited\]/);
-  assert.match(workflow, /github\.actor == 'JOHNNYMACONNY'/);
-  assert.match(workflow, /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/);
-  assert.match(workflow, /contains\(github\.event\.pull_request\.body \|\| '', '\[run-gpt-action-production\]'\)/);
+  assert.match(workflow, /on:\s*\n\s+workflow_dispatch:/);
+  assert.doesNotMatch(workflow, /\n\s+push:\s*\n/);
+  assert.doesNotMatch(workflow, /\n\s+pull_request:\s*\n/);
+  assert.doesNotMatch(workflow, /run-gpt-action-production/);
+  assert.doesNotMatch(workflow, /trigger one-shot GPT Action production/);
 });
