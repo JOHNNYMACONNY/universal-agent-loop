@@ -7,8 +7,6 @@ import { createProductionRuntimeApp, PRODUCTION_ENVIRONMENT_NAMES } from '../src
 
 const SHA = 'a'.repeat(40);
 const ENV = {
-  UPSTASH_REDIS_REST_URL: 'https://redis.example.com',
-  UPSTASH_REDIS_REST_TOKEN: 'redis-token',
   VERCEL_API_TOKEN: 'vercel-token',
   TARGET_PROJECT_ID: 'project-1',
   TARGET_REPOSITORY_OWNER: 'owner',
@@ -19,26 +17,28 @@ const ENV = {
   APPROVED_REDIRECT_HOSTS: '',
   AGENT_BROWSER_SNAPSHOT_ID: 'snap_1',
   REGISTRATION_CONTROL_TOKEN: 'registration-control-secret-123',
+  REGISTRATION_CAPABILITY_SECRET: 'registration-capability-secret-with-adequate-length',
   OWNER_BINDING_SECRET: 'owner-binding-secret-with-adequate-length',
   PRINCIPAL_AUDIENCE: 'game-browser-mcp',
   RUNTIME_ALLOWED_HOSTS: '127.0.0.1,localhost',
 };
 
-test('production composition declares every required secret/config category', () => {
+test('production composition is Vercel-only and declares every required secret/config category', () => {
   const declared = new Set<string>(PRODUCTION_ENVIRONMENT_NAMES);
+  assert.equal(declared.has('UPSTASH_REDIS_REST_URL'), false);
+  assert.equal(declared.has('UPSTASH_REDIS_REST_TOKEN'), false);
   for (const name of [
-    'UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN', 'VERCEL_API_TOKEN',
-    'TARGET_PROJECT_ID', 'TARGET_REPOSITORY_OWNER', 'TARGET_REPOSITORY_NAME', 'TARGET_ENTRY_PATH',
+    'VERCEL_API_TOKEN', 'TARGET_PROJECT_ID', 'TARGET_REPOSITORY_OWNER', 'TARGET_REPOSITORY_NAME', 'TARGET_ENTRY_PATH',
     'APPROVED_DEPLOYMENT_HOST_PATTERNS', 'AGENT_BROWSER_SNAPSHOT_ID',
-    'REGISTRATION_CONTROL_TOKEN', 'OWNER_BINDING_SECRET', 'PRINCIPAL_AUDIENCE',
+    'REGISTRATION_CONTROL_TOKEN', 'REGISTRATION_CAPABILITY_SECRET', 'OWNER_BINDING_SECRET', 'PRINCIPAL_AUDIENCE',
   ]) assert.ok(declared.has(name), `${name} missing from environment contract`);
 });
 
 test('production composition fails closed when required environment is missing', () => {
-  assert.throws(() => createProductionRuntimeApp({}), /UPSTASH_REDIS_REST_URL|configuration/i);
+  assert.throws(() => createProductionRuntimeApp({}), /VERCEL_API_TOKEN|configuration/i);
 });
 
-test('production app exposes health + fixture but protects internal registration without control token', async () => {
+test('production app starts without Redis and protects internal registration without control token', async () => {
   const app = createProductionRuntimeApp(ENV);
   const http = createServer(app);
   await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
