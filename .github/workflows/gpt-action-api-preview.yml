@@ -1,0 +1,222 @@
+name: gpt-action-api-preview
+
+on:
+  pull_request:
+    types: [edited]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpt-action-api-preview
+  cancel-in-progress: false
+
+jobs:
+  deploy-and-verify:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.actor == 'JOHNNYMACONNY' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       contains(github.event.pull_request.body || '', '[run-gpt-action-preview]'))
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_TEAM_ID: team_3LfEMNVsAEbXKLoCrnzXQzrF
+      VERCEL_TEAM_SLUG: johnny-maconnys-projects
+      VERCEL_PROJECT_NAME: ual-gpt-action-api
+      TARGET_REPOSITORY_OWNER: JOHNNYMACONNY
+      TARGET_REPOSITORY_NAME: universal-agent-loop
+    steps:
+      - name: Resolve exact candidate
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            sha='${{ github.event.pull_request.head.sha }}'
+          else
+            sha='${{ github.sha }}'
+          fi
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid candidate SHA" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.candidate.outputs.sha }}
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Require Vercel control-plane credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${VERCEL_TOKEN:-}" ]; then
+            echo "::error::VERCEL_TOKEN repository secret is required"
+            exit 1
+          fi
+
+      - name: Create or resolve dedicated Vercel project
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          api='https://api.vercel.com'
+          auth="Authorization: Bearer $VERCEL_TOKEN"
+          status=$(curl -sS -o /tmp/project.json -w '%{http_code}' -H "$auth" \
+            "$api/v9/projects/$VERCEL_PROJECT_NAME?teamId=$VERCEL_TEAM_ID")
+          if [ "$status" = '404' ]; then
+            body=$(jq -n --arg name "$VERCEL_PROJECT_NAME" --arg repo "$TARGET_REPOSITORY_OWNER/$TARGET_REPOSITORY_NAME" \
+              '{name:$name,rootDirectory:"apps/gpt-action-api",gitRepository:{type:"github",repo:$repo}}')
+            status=$(curl -sS -o /tmp/project.json -w '%{http_code}' -X POST \
+              "$api/v11/projects?teamId=$VERCEL_TEAM_ID" -H "$auth" -H 'Content-Type: application/json' --data "$body")
+          fi
+          if [ "$status" != '200' ] && [ "$status" != '201' ]; then
+            echo "::error::Unable to create/resolve Vercel project (HTTP $status)"
+            jq -r '.error.code // empty, .error.message // empty' /tmp/project.json || true
+            exit 1
+          fi
+          project_id=$(jq -r '.id // empty' /tmp/project.json)
+          if [[ ! "$project_id" =~ ^prj_ ]]; then
+            echo "::error::Vercel project response did not contain a project ID"
+            exit 1
+          fi
+
+          settings=$(jq -n '{rootDirectory:"apps/gpt-action-api",buildCommand:null,outputDirectory:null,ssoProtection:null,passwordProtection:null,trustedIps:null}')
+          settings_status=$(curl -sS -o /tmp/project-settings.json -w '%{http_code}' -X PATCH \
+            "$api/v9/projects/$project_id?teamId=$VERCEL_TEAM_ID" -H "$auth" -H 'Content-Type: application/json' --data "$settings")
+          if [ "$settings_status" != '200' ]; then
+            echo "::error::Unable to normalize GPT Action Vercel project settings (HTTP $settings_status)"
+            exit 1
+          fi
+
+          echo "project_id=$project_id" >> "$GITHUB_OUTPUT"
+          echo "VERCEL_PROJECT_ID=$project_id" >> "$GITHUB_ENV"
+
+      - name: Generate ephemeral preview Action key
+        shell: bash
+        run: |
+          set -euo pipefail
+          value=$(openssl rand -hex 32)
+          echo "::add-mask::$value"
+          echo "UAL_ACTION_API_KEY=$value" >> "$GITHUB_ENV"
+
+      - name: Upsert ephemeral preview runtime credentials
+        shell: bash
+        env:
+          RUNTIME_GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$RUNTIME_GITHUB_TOKEN"
+          api='https://api.vercel.com'
+          auth="Authorization: Bearer $VERCEL_TOKEN"
+          upsert_env() {
+            local key="$1" value="$2"
+            local body status
+            body=$(jq -n --arg key "$key" --arg value "$value" '{key:$key,value:$value,type:"encrypted",target:["preview"]}')
+            status=$(curl -sS -o /tmp/env-result.json -w '%{http_code}' -X POST \
+              "$api/v10/projects/$VERCEL_PROJECT_ID/env?upsert=true&teamId=$VERCEL_TEAM_ID" \
+              -H "$auth" -H 'Content-Type: application/json' --data "$body")
+            if [ "$status" != '200' ] && [ "$status" != '201' ]; then
+              echo "::error::Failed to upsert $key (HTTP $status)"
+              jq -r '.error.code // empty, .error.message // empty' /tmp/env-result.json || true
+              exit 1
+            fi
+          }
+          upsert_env UAL_ACTION_API_KEY "$UAL_ACTION_API_KEY"
+          upsert_env GITHUB_TOKEN "$RUNTIME_GITHUB_TOKEN"
+
+      - name: Create exact-commit preview deployment
+        id: deploy
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+          VERCEL_ORG_ID: ${{ env.VERCEL_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          export VERCEL_PROJECT_ID="$VERCEL_PROJECT_ID"
+          deployment_url=$(npx -y vercel@59.1.4 deploy --yes --token "$VERCEL_TOKEN" --scope "$VERCEL_TEAM_SLUG" \
+            --cwd "$GITHUB_WORKSPACE" | tail -n 1)
+          if [[ ! "$deployment_url" =~ ^https://[A-Za-z0-9.-]+\.vercel\.app$ ]]; then
+            echo "::error::Vercel CLI did not return a preview URL"
+            exit 1
+          fi
+          deployment_host=${deployment_url#https://}
+
+          for attempt in $(seq 1 60); do
+            curl -sS -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v13/deployments/$deployment_host?teamId=$VERCEL_TEAM_ID&withGitRepoInfo=true" \
+              -o /tmp/deployment-current.json
+            state=$(jq -r '.readyState // .status // .state // empty' /tmp/deployment-current.json)
+            if [ "$state" = 'READY' ]; then break; fi
+            if [ "$state" = 'ERROR' ] || [ "$state" = 'CANCELED' ]; then
+              echo "::error::Vercel preview deployment ended in state $state"
+              exit 1
+            fi
+            sleep 3
+          done
+          state=$(jq -r '.readyState // .status // .state // empty' /tmp/deployment-current.json)
+          [ "$state" = 'READY' ] || { echo "::error::Preview did not become READY"; exit 1; }
+          deployment_id=$(jq -r '.id // .uid // empty' /tmp/deployment-current.json)
+          meta_sha=$(jq -r '.meta.githubCommitSha // .gitSource.sha // empty' /tmp/deployment-current.json)
+          project_id=$(jq -r '.projectId // empty' /tmp/deployment-current.json)
+          target=$(jq -r 'if .target == null then "preview" else .target end' /tmp/deployment-current.json)
+          if [[ ! "$deployment_id" =~ ^dpl_ ]] || [ "$target" != 'preview' ] || [ "$project_id" != "$VERCEL_PROJECT_ID" ]; then
+            echo "::error::Preview deployment provenance is invalid"
+            exit 1
+          fi
+          if [ -n "$meta_sha" ] && [ "$meta_sha" != "$CANDIDATE_SHA" ]; then
+            echo "::error::Provider commit metadata does not match candidate"
+            exit 1
+          fi
+          echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
+          echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
+
+      - name: Verify deployed Action behavior
+        shell: bash
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment_url }}
+        run: |
+          set -euo pipefail
+          status=$(curl -sS -o /tmp/health.json -w '%{http_code}' "$DEPLOYMENT_URL/health")
+          [ "$status" = '200' ] && [ "$(jq -r '.ok // false' /tmp/health.json)" = 'true' ] || { echo "::error::Health verification failed"; exit 1; }
+
+          status=$(curl -sS -o /tmp/openapi.json -w '%{http_code}' "$DEPLOYMENT_URL/openapi.json")
+          [ "$status" = '200' ] && [ "$(jq -r '.openapi' /tmp/openapi.json)" = '3.1.0' ] || { echo "::error::OpenAPI verification failed"; exit 1; }
+          [ "$(jq -r '.paths["/skills/{name}"].get.operationId' /tmp/openapi.json)" = 'getCanonicalSkill' ] || { echo "::error::OpenAPI operation missing"; exit 1; }
+
+          status=$(curl -sS -o /tmp/unauthorized.json -w '%{http_code}' "$DEPLOYMENT_URL/skills/autonomous-dev-loop")
+          [ "$status" = '401' ] || { echo "::error::Skill endpoint did not reject missing bearer auth"; exit 1; }
+
+          status=$(curl -sS -o /tmp/skill.json -w '%{http_code}' \
+            -H "Authorization: Bearer $UAL_ACTION_API_KEY" "$DEPLOYMENT_URL/skills/autonomous-dev-loop")
+          [ "$status" = '200' ] || { echo "::error::Authenticated skill retrieval failed (HTTP $status)"; exit 1; }
+          [ "$(jq -r '.repository' /tmp/skill.json)" = 'JOHNNYMACONNY/universal-agent-loop' ] || exit 1
+          [ "$(jq -r '.ref' /tmp/skill.json)" = 'main' ] || exit 1
+          [ "$(jq -r '.path' /tmp/skill.json)" = 'skills/autonomous-dev-loop/SKILL.md' ] || exit 1
+          jq -e '.content | contains("# Autonomous Dev Loop")' /tmp/skill.json >/dev/null || exit 1
+
+      - name: Record non-secret preview evidence
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+          DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment_url }}
+        run: |
+          jq -n --arg candidateSha "$CANDIDATE_SHA" --arg deploymentId "$DEPLOYMENT_ID" --arg deploymentUrl "$DEPLOYMENT_URL" \
+            '{candidateSha:$candidateSha,deploymentId:$deploymentId,deploymentUrl:$deploymentUrl,health:true,openapi:true,unauthorizedRejected:true,canonicalSkillRetrieved:true}' \
+            > gpt-action-preview-evidence.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpt-action-preview-${{ steps.candidate.outputs.sha }}
+          path: gpt-action-preview-evidence.json
+          if-no-files-found: ignore

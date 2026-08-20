@@ -1,0 +1,178 @@
+name: gpt-action-api-production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpt-action-api-production
+  cancel-in-progress: false
+
+jobs:
+  deploy-and-verify:
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_TEAM_ID: team_3LfEMNVsAEbXKLoCrnzXQzrF
+      VERCEL_TEAM_SLUG: johnny-maconnys-projects
+      VERCEL_PROJECT_ID: prj_80jo2dodxOmSSvX6muUc7Tc7wIo1
+      SOURCE_PREVIEW_BRANCH: chatgpt/gpt-action-api-step-3a
+      PRODUCTION_URL: https://ual-gpt-action-api.vercel.app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Require Vercel control-plane credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${VERCEL_TOKEN:-}" ]; then
+            echo "::error::VERCEL_TOKEN repository secret is required"
+            exit 1
+          fi
+
+      - name: Promote branch-scoped Preview credentials to Production
+        shell: bash
+        run: |
+          set -euo pipefail
+          api='https://api.vercel.com'
+          auth="Authorization: Bearer $VERCEL_TOKEN"
+          encoded_branch=$(jq -rn --arg value "$SOURCE_PREVIEW_BRANCH" '$value|@uri')
+          status=$(curl -sS -o /tmp/preview-env.json -w '%{http_code}' -H "$auth" \
+            "$api/v10/projects/$VERCEL_PROJECT_ID/env?gitBranch=$encoded_branch&decrypt=true&teamId=$VERCEL_TEAM_ID")
+          if [ "$status" != '200' ]; then
+            echo "::error::Unable to read source Preview environment variables (HTTP $status)"
+            exit 1
+          fi
+
+          promote() {
+            local key="$1" value body promote_status
+            value=$(jq -r --arg key "$key" '[.envs[] | select(.key == $key)] | first | .value // empty' /tmp/preview-env.json)
+            if [ -z "$value" ]; then
+              echo "::error::Required branch-scoped Preview variable $key was not found"
+              exit 1
+            fi
+            echo "::add-mask::$value"
+            body=$(jq -n --arg key "$key" --arg value "$value" '{key:$key,value:$value,type:"encrypted",target:["production"]}')
+            promote_status=$(curl -sS -o /tmp/promote-result.json -w '%{http_code}' -X POST \
+              "$api/v10/projects/$VERCEL_PROJECT_ID/env?upsert=true&teamId=$VERCEL_TEAM_ID" \
+              -H "$auth" -H 'Content-Type: application/json' --data "$body")
+            if [ "$promote_status" != '200' ] && [ "$promote_status" != '201' ]; then
+              echo "::error::Unable to promote $key to Production (HTTP $promote_status)"
+              exit 1
+            fi
+            if [ "$key" = 'UAL_ACTION_API_KEY' ]; then
+              echo "PRODUCTION_ACTION_KEY=$value" >> "$GITHUB_ENV"
+            fi
+          }
+
+          promote GITHUB_TOKEN
+          promote UAL_ACTION_API_KEY
+          rm -f /tmp/preview-env.json /tmp/promote-result.json
+
+      - name: Deploy merged main to Production
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate_sha=$(git rev-parse HEAD)
+          export VERCEL_ORG_ID="$VERCEL_TEAM_ID"
+          deployment_url=$(npx -y vercel@59.1.4 deploy --prod --yes --token "$VERCEL_TOKEN" --scope "$VERCEL_TEAM_SLUG" \
+            --cwd "$GITHUB_WORKSPACE" | tail -n 1)
+          if [[ ! "$deployment_url" =~ ^https://[A-Za-z0-9.-]+\.vercel\.app$ ]]; then
+            echo "::error::Vercel CLI did not return a Production deployment URL"
+            exit 1
+          fi
+          deployment_host=${deployment_url#https://}
+
+          for attempt in $(seq 1 60); do
+            curl -sS -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v13/deployments/$deployment_host?teamId=$VERCEL_TEAM_ID&withGitRepoInfo=true" \
+              -o /tmp/deployment-current.json
+            state=$(jq -r '.readyState // .status // .state // empty' /tmp/deployment-current.json)
+            if [ "$state" = 'READY' ]; then break; fi
+            if [ "$state" = 'ERROR' ] || [ "$state" = 'CANCELED' ]; then
+              echo "::error::Production deployment ended in state $state"
+              exit 1
+            fi
+            sleep 3
+          done
+
+          state=$(jq -r '.readyState // .status // .state // empty' /tmp/deployment-current.json)
+          deployment_id=$(jq -r '.id // .uid // empty' /tmp/deployment-current.json)
+          project_id=$(jq -r '.projectId // empty' /tmp/deployment-current.json)
+          target=$(jq -r '.target // empty' /tmp/deployment-current.json)
+          meta_sha=$(jq -r '.meta.githubCommitSha // .gitSource.sha // empty' /tmp/deployment-current.json)
+          [ "$state" = 'READY' ] || { echo "::error::Production deployment did not become READY"; exit 1; }
+          [[ "$deployment_id" =~ ^dpl_ ]] || { echo "::error::Production deployment ID missing"; exit 1; }
+          [ "$project_id" = "$VERCEL_PROJECT_ID" ] || { echo "::error::Production deployment project mismatch"; exit 1; }
+          [ "$target" = 'production' ] || { echo "::error::Deployment target is not Production"; exit 1; }
+          if [ -n "$meta_sha" ] && [ "$meta_sha" != "$candidate_sha" ]; then
+            echo "::error::Production deployment commit metadata does not match merged main"
+            exit 1
+          fi
+
+          echo "candidate_sha=$candidate_sha" >> "$GITHUB_OUTPUT"
+          echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
+          echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
+
+      - name: Verify stable Production Action
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            status=$(curl -sS -o /tmp/health.json -w '%{http_code}' "$PRODUCTION_URL/health" || true)
+            if [ "$status" = '200' ] && [ "$(jq -r '.ok // false' /tmp/health.json 2>/dev/null || true)" = 'true' ]; then
+              break
+            fi
+            sleep 2
+          done
+          [ "$status" = '200' ] && [ "$(jq -r '.ok // false' /tmp/health.json)" = 'true' ] || { echo "::error::Production health verification failed"; exit 1; }
+
+          status=$(curl -sS -o /tmp/openapi.json -w '%{http_code}' "$PRODUCTION_URL/openapi.json")
+          [ "$status" = '200' ] || { echo "::error::Production OpenAPI endpoint failed"; exit 1; }
+          [ "$(jq -r '.openapi' /tmp/openapi.json)" = '3.1.0' ] || exit 1
+          [ "$(jq -r '.servers[0].url' /tmp/openapi.json)" = "$PRODUCTION_URL" ] || exit 1
+          [ "$(jq -r '.paths["/skills/{name}"].get.operationId' /tmp/openapi.json)" = 'getCanonicalSkill' ] || exit 1
+          [ "$(jq -r '.components.schemas.SkillResponse.type' /tmp/openapi.json)" = 'object' ] || exit 1
+
+          status=$(curl -sS -o /tmp/unauthorized.json -w '%{http_code}' "$PRODUCTION_URL/skills/autonomous-dev-loop")
+          [ "$status" = '401' ] || { echo "::error::Production endpoint did not reject missing bearer auth"; exit 1; }
+
+          status=$(curl -sS -o /tmp/skill.json -w '%{http_code}' \
+            -H "Authorization: Bearer $PRODUCTION_ACTION_KEY" "$PRODUCTION_URL/skills/autonomous-dev-loop")
+          [ "$status" = '200' ] || { echo "::error::Authenticated Production skill retrieval failed (HTTP $status)"; exit 1; }
+          [ "$(jq -r '.repository' /tmp/skill.json)" = 'JOHNNYMACONNY/universal-agent-loop' ] || exit 1
+          [ "$(jq -r '.ref' /tmp/skill.json)" = 'main' ] || exit 1
+          [ "$(jq -r '.path' /tmp/skill.json)" = 'skills/autonomous-dev-loop/SKILL.md' ] || exit 1
+          jq -e '.content | contains("# Autonomous Dev Loop")' /tmp/skill.json >/dev/null || exit 1
+
+      - name: Record non-secret Production evidence
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.deploy.outputs.candidate_sha }}
+          DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment_url }}
+        run: |
+          jq -n \
+            --arg candidateSha "$CANDIDATE_SHA" \
+            --arg deploymentId "$DEPLOYMENT_ID" \
+            --arg deploymentUrl "$DEPLOYMENT_URL" \
+            --arg stableUrl "$PRODUCTION_URL" \
+            '{candidateSha:$candidateSha,deploymentId:$deploymentId,deploymentUrl:$deploymentUrl,stableUrl:$stableUrl,health:true,openapi:true,unauthorizedRejected:true,canonicalSkillRetrieved:true}' \
+            > gpt-action-production-evidence.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpt-action-production-${{ steps.deploy.outputs.candidate_sha }}
+          path: gpt-action-production-evidence.json
+          if-no-files-found: ignore
