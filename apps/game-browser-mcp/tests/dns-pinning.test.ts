@@ -11,12 +11,13 @@ const registration: TargetRegistration = {
   created_at: '2026-08-19T00:00:00.000Z', expires_at: '2026-08-19T00:15:00.000Z', provenance_source: 'provider_api',
 };
 
-test('sandbox egress combines exact trusted domains with private/reserved CIDR denial', () => {
+test('sandbox egress combines exact trusted domains with provider-valid private/reserved IPv4 denial', () => {
   const policy = buildSandboxNetworkPolicy(registration);
   assert.deepEqual(policy.allow, ['game.example.com', 'cdn.example.com']);
-  for (const cidr of ['10.0.0.0/8', '127.0.0.0/8', '169.254.0.0/16', '192.168.0.0/16', '::1/128', 'fc00::/7', 'fe80::/10']) {
+  for (const cidr of ['10.0.0.0/8', '127.0.0.0/8', '169.254.0.0/16', '192.168.0.0/16']) {
     assert.ok(policy.subnets.deny.includes(cidr as (typeof PRIVATE_RESERVED_CIDRS)[number]), `missing ${cidr}`);
   }
+  assert.equal(policy.subnets.deny.some((cidr) => cidr.includes(':')), false);
 });
 
 test('policy never adds an unregistered hostname or permissive public CIDR', () => {
