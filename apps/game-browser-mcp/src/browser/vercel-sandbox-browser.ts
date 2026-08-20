@@ -1,5 +1,7 @@
 import { Sandbox } from '@vercel/sandbox';
 
+import { buildSandboxNetworkPolicyForHosts } from '../security/network-policy.js';
+
 import type {
   AcceptedActionBatch,
   BrowserAdapter,
@@ -99,7 +101,7 @@ export class VercelSandboxBrowser implements BrowserAdapter {
       source: { type: 'snapshot', snapshotId: this.#snapshotId },
       persistent: false,
       timeout: this.#timeoutMs,
-      networkPolicy: { mode: 'custom', allowedDomains: [...new Set(input.allowedHosts)], allowedCIDRs: [], deniedCIDRs: [] },
+      networkPolicy: buildSandboxNetworkPolicyForHosts(input.allowedHosts),
       tags: { service: 'game-browser-mcp' },
     });
     const payload = await this.#worker(handle, {

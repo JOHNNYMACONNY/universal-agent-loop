@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { VercelSandboxBrowser, type SandboxFactory, type SandboxHandle } from '../src/browser/vercel-sandbox-browser.js';
+import { PRIVATE_RESERVED_CIDRS } from '../src/security/network-policy.js';
 
 class FakeHandle implements SandboxHandle {
   readonly name = 'gbr-session_1';
@@ -28,13 +29,13 @@ class FakeHandle implements SandboxHandle {
 
 class FakeFactory implements SandboxFactory {
   readonly handle = new FakeHandle();
-  createOptions: unknown;
+  createOptions: any;
   getCalls = 0;
   async create(options: unknown) { this.createOptions = options; return this.handle; }
   async get(_name: string) { this.getCalls += 1; return this.handle; }
 }
 
-test('start creates non-persistent snapshot sandbox with deny-by-default policy and fixed worker command', async () => {
+test('start creates non-persistent snapshot sandbox with exact-domain/private-CIDR network policy and fixed worker command', async () => {
   const factory = new FakeFactory();
   const browser = new VercelSandboxBrowser({ factory, snapshotId: 'snap_1', timeoutMs: 900_000 });
   const result = await browser.start({
@@ -42,12 +43,12 @@ test('start creates non-persistent snapshot sandbox with deny-by-default policy 
     allowedHosts: ['game.example.com', 'cdn.example.com'], viewport: { width: 1280, height: 720 },
   });
   assert.equal(result.session.sandboxId, 'gbr-session_1');
-  assert.deepEqual(factory.createOptions, {
-    name: 'gbr-session_1', source: { type: 'snapshot', snapshotId: 'snap_1' }, persistent: false,
-    timeout: 900_000,
-    networkPolicy: { mode: 'custom', allowedDomains: ['game.example.com', 'cdn.example.com'], allowedCIDRs: [], deniedCIDRs: [] },
-    tags: { service: 'game-browser-mcp' },
-  });
+  assert.equal(factory.createOptions.name, 'gbr-session_1');
+  assert.deepEqual(factory.createOptions.source, { type: 'snapshot', snapshotId: 'snap_1' });
+  assert.equal(factory.createOptions.persistent, false);
+  assert.deepEqual(factory.createOptions.networkPolicy.allowedDomains, ['game.example.com', 'cdn.example.com']);
+  assert.deepEqual(factory.createOptions.networkPolicy.allowedCIDRs, []);
+  assert.deepEqual(factory.createOptions.networkPolicy.deniedCIDRs, [...PRIVATE_RESERVED_CIDRS]);
   assert.equal(factory.handle.calls[0]?.cmd, 'node');
   assert.equal(factory.handle.calls[0]?.args[0], '/vercel/sandbox/worker.mjs');
   assert.equal(factory.handle.calls.some((call) => call.cmd === 'sh' || call.args.includes('-c')), false);

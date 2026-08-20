@@ -76,10 +76,10 @@ test('rebinding-aware resolver fails closed if a later resolution turns private'
 
 test('sandbox policy is deny-by-default with only trusted concrete hosts', () => {
   const policy = buildSandboxNetworkPolicy(registration);
-  assert.deepEqual(policy, {
-    mode: 'custom',
-    allowedDomains: ['game.example.com', 'cdn.example.com'],
-    allowedCIDRs: [],
-    deniedCIDRs: [],
-  });
+  assert.equal(policy.mode, 'custom');
+  assert.deepEqual(policy.allowedDomains, ['game.example.com', 'cdn.example.com']);
+  assert.deepEqual(policy.allowedCIDRs, []);
+  assert.ok(policy.deniedCIDRs.includes('10.0.0.0/8'));
+  assert.ok(policy.deniedCIDRs.includes('169.254.0.0/16'));
+  assert.ok(policy.deniedCIDRs.includes('::1/128'));
 });

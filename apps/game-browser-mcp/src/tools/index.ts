@@ -124,6 +124,13 @@ export function createGameToolServices(deps: GameToolDependencies) {
     return { session: touched, registration: reg, ref: owned.ref };
   }
 
+  async function validateObservedUrl(url: string, registration: TargetRegistration): Promise<void> {
+    let parsed: URL;
+    try { parsed = new URL(url); }
+    catch { throw new RuntimeError('TARGET_BLOCKED', 'browser reported an invalid URL'); }
+    await validateRegisteredUrl(parsed, registration, deps.resolveDns);
+  }
+
   async function requireLive(ref: BrowserSessionRef, sessionId: string): Promise<void> {
     const health = await deps.browser.health(ref);
     if (!health.alive) {
@@ -145,6 +152,8 @@ export function createGameToolServices(deps: GameToolDependencies) {
     const sessionId = sessionIdFactory();
     const startedAt = now();
     const started = await deps.browser.start({ logicalSessionId: sessionId, targetUrl: reg.deployment_url, allowedHosts: reg.allowed_hosts, ...(input.viewport ? { viewport: input.viewport } : {}) });
+    try { await validateObservedUrl(started.observation.url, reg); }
+    catch (error) { try { await deps.browser.end(started.session); } catch {} throw error; }
     const absoluteExpiry = new Date(Math.min(startedAt.getTime() + deps.limits.maxSessionLifetimeMs, new Date(reg.expires_at).getTime()));
     const idleExpiry = new Date(Math.min(startedAt.getTime() + deps.limits.maxIdleMs, absoluteExpiry.getTime()));
     const record: SessionRecord = {
@@ -180,6 +189,8 @@ export function createGameToolServices(deps: GameToolDependencies) {
     if (input.expected_observation_seq !== undefined && input.expected_observation_seq !== owned.session.observation_seq) throw new RuntimeError('ACTION_REJECTED', 'observation sequence mismatch');
     await requireLive(owned.ref, owned.session.session_id);
     const raw = await deps.browser.observe(owned.ref);
+    try { await validateObservedUrl(raw.url, owned.registration); }
+    catch (error) { await cleanup(owned.session, owned.ref); throw error; }
     await deps.sessions.updateHeldInput(owned.session.session_id, raw.heldKeys, raw.heldPointerButtons);
     const seq = await deps.sessions.nextObservation(owned.session.session_id);
     const refreshed = (await deps.sessions.get(owned.session.session_id)) ?? owned.session;
@@ -254,6 +265,8 @@ export function createGameToolServices(deps: GameToolDependencies) {
     await requireLive(owned.ref, owned.session.session_id);
     try { await deps.browser.releaseHeldInput(owned.ref); } catch {}
     const raw = await deps.browser.reset(owned.ref);
+    try { await validateObservedUrl(raw.url, owned.registration); }
+    catch (error) { await cleanup(owned.session, owned.ref); throw error; }
     await deps.sessions.resetRecovery(input.session_id);
     await deps.sessions.updateHeldInput(input.session_id, raw.heldKeys, raw.heldPointerButtons);
     const touched = await deps.sessions.touch(input.session_id, now(), deps.limits.maxIdleMs);
