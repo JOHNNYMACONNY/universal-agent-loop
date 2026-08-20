@@ -14,6 +14,7 @@ export interface GameToolSurface {
 }
 
 const SessionIdSchema = z.string().min(1).max(128);
+const TargetRegistrationIdSchema = z.string().min(1).max(4096);
 const CommitShaSchema = z.string().regex(/^[0-9a-f]{40}$/i);
 const JsonPointerSchema = z.string().max(512).regex(/^(?:\/(?:[^~\/]|~[01])*)*$/);
 
@@ -77,7 +78,7 @@ export function createGameMcpHandler(services: GameToolSurface) {
     server.registerTool('game_session_start', {
       description: descriptions.game_session_start,
       inputSchema: z.object({
-        target_registration_id: z.string().min(1).max(128),
+        target_registration_id: TargetRegistrationIdSchema,
         expected_commit_sha: CommitShaSchema,
         viewport: z.object({ width: z.number().int().positive().max(4096), height: z.number().int().positive().max(4096) }).strict().optional(),
       }).strict(),
