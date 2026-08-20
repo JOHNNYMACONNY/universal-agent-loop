@@ -1,8 +1,9 @@
 name: game-browser-sandbox-diagnostic
 
 on:
-  push:
-    branches: [chatgpt/autonomous-dev-loop]
+  pull_request:
+    types: [synchronize]
+    branches: [main]
     paths:
       - .github/workflows/game-browser-sandbox-diagnostic.yml
 
@@ -34,7 +35,6 @@ jobs:
           set -euo pipefail
           test -n "${VERCEL_TOKEN:-}"
       - name: Mint project OIDC
-        id: oidc
         shell: bash
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -95,10 +95,8 @@ jobs:
             try {
               sandbox = await Sandbox.create({ name, ...options });
               console.log(`PROBE ${label}: PASS`);
-              return true;
             } catch (error) {
               console.log(`PROBE ${label}: FAIL ${diagnostic(error) || 'no-provider-diagnostic'}`);
-              return false;
             } finally {
               await cleanup(name, sandbox);
             }
