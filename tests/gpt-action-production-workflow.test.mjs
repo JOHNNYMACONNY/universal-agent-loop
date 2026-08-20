@@ -17,3 +17,11 @@ test('GPT Action production workflow promotes existing Preview secrets without e
   assert.match(workflow, /\/skills\/autonomous-dev-loop/);
   assert.doesNotMatch(workflow, /echo\s+[^\n]*(GITHUB_TOKEN|UAL_ACTION_API_KEY)/);
 });
+
+test('one-shot production trigger only runs on the exact authorized merge message', async () => {
+  const workflow = await readFile(workflowUrl, 'utf8');
+
+  assert.match(workflow, /push:\s*\n\s+branches:\s*\[main\]/);
+  assert.match(workflow, /github\.event_name == 'workflow_dispatch'/);
+  assert.match(workflow, /github\.event\.head_commit\.message == 'chore: trigger one-shot GPT Action production'/);
+});
