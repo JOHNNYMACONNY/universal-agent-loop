@@ -4,7 +4,8 @@ import { Sandbox } from '@vercel/sandbox';
 const version = process.env.AGENT_BROWSER_VERSION;
 if (!version || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(version)) throw new Error('AGENT_BROWSER_VERSION must be explicitly pinned');
 const workerUrl = new URL('../sandbox/worker.mjs', import.meta.url);
-const worker = await readFile(workerUrl);
+const lockUrl = new URL('../sandbox/persistent-lock.mjs', import.meta.url);
+const [worker, persistentLock] = await Promise.all([readFile(workerUrl), readFile(lockUrl)]);
 
 const sandbox = await Sandbox.create({ runtime: 'node24', persistent: false, timeout: 20 * 60_000 } as any);
 try {
@@ -12,7 +13,10 @@ try {
   if (install.exitCode !== 0) throw new Error(await install.stderr());
   const browserInstall = await sandbox.runCommand('agent-browser', ['install', '--with-deps']);
   if (browserInstall.exitCode !== 0) throw new Error(await browserInstall.stderr());
-  await sandbox.writeFiles([{ path: '/vercel/sandbox/worker.mjs', content: worker, mode: 0o755 }]);
+  await sandbox.writeFiles([
+    { path: '/vercel/sandbox/worker.mjs', content: worker, mode: 0o755 },
+    { path: '/vercel/sandbox/persistent-lock.mjs', content: persistentLock, mode: 0o644 },
+  ]);
   const smoke = await sandbox.runCommand('agent-browser', ['--version']);
   if (smoke.exitCode !== 0) throw new Error(await smoke.stderr());
   const snapshot = await sandbox.snapshot({ expiration: 30 * 24 * 60 * 60_000 });
