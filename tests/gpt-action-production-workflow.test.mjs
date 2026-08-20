@@ -25,3 +25,12 @@ test('one-shot production trigger only runs on the exact authorized merge messag
   assert.match(workflow, /github\.event_name == 'workflow_dispatch'/);
   assert.match(workflow, /github\.event\.head_commit\.message == 'chore: trigger one-shot GPT Action production'/);
 });
+
+test('authorized same-repo PR edit can trigger the production run without exposing secrets', async () => {
+  const workflow = await readFile(workflowUrl, 'utf8');
+
+  assert.match(workflow, /pull_request:\s*\n\s+types:\s*\[edited\]/);
+  assert.match(workflow, /github\.actor == 'JOHNNYMACONNY'/);
+  assert.match(workflow, /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/);
+  assert.match(workflow, /contains\(github\.event\.pull_request\.body \|\| '', '\[run-gpt-action-production\]'\)/);
+});
