@@ -49,9 +49,8 @@ function isFactory(value: GameToolSurface | GameToolSurfaceFactory): value is Ga
 }
 
 export function createRuntimeApp(services: GameToolSurface | GameToolSurfaceFactory, options: RuntimeAppOptions) {
-  const app = createMcpExpressApp({ host: '0.0.0.0', allowedHosts: options.allowedHosts });
+  const app = createMcpExpressApp({ host: '0.0.0.0', allowedHosts: options.allowedHosts, jsonLimit: '64kb' });
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '64kb' }));
   app.get('/healthz', (_req, res) => res.json({ ok: true }));
   app.get('/fixture/expected-failure', (_req, res) => res.status(404).json({ error: 'EXPECTED_REMOTE_QA_NETWORK_FAILURE' }));
   app.use('/fixture', express.static(fixtureRoot, { fallthrough: false, index: 'index.html' }));
