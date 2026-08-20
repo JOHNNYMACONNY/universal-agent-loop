@@ -38,7 +38,9 @@ export class VercelSandboxSessionStore implements SessionStore {
     if (result.exitCode !== 0 || !parsed?.ok) {
       const code = RuntimeErrorCodeSchema.safeParse(parsed?.error);
       if (code.success) throw new RuntimeError(code.data, String(parsed?.detail ?? parsed?.error));
-      throw new RuntimeError('STORAGE_ERROR', String(parsed?.detail ?? parsed?.error ?? (await result.stderr()) || 'sandbox session worker failed'));
+      const stderr = await result.stderr();
+      const message = parsed?.detail ?? parsed?.error ?? (stderr || 'sandbox session worker failed');
+      throw new RuntimeError('STORAGE_ERROR', String(message));
     }
     return parsed;
   }
