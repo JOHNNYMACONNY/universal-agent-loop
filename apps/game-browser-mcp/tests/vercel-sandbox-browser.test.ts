@@ -8,9 +8,15 @@ class FakeHandle implements SandboxHandle {
   readonly name = 'gbr-session_1';
   status: string = 'running';
   calls: Array<{ cmd: string; args: string[] }> = [];
+  failEndWorker = false;
+  stopCalls = 0;
+  deleteCalls = 0;
   async runCommand(cmd: string, args: string[]) {
     this.calls.push({ cmd, args });
     const request = JSON.parse(Buffer.from(args[1]!, 'base64url').toString('utf8')) as { type: string };
+    if (request.type === 'end' && this.failEndWorker) {
+      return { exitCode: 1, stdout: async () => JSON.stringify({ ok: false, error: 'INTERNAL_ERROR', detail: 'simulated worker cleanup failure' }), stderr: async () => '' };
+    }
     const payload = request.type === 'health'
       ? { ok: true, alive: true }
       : request.type === 'start' || request.type === 'observe' || request.type === 'reset'
@@ -23,8 +29,8 @@ class FakeHandle implements SandboxHandle {
     return { exitCode: 0, stdout: async () => JSON.stringify(payload), stderr: async () => '' };
   }
   currentSessionStatus() { return this.status; }
-  async stop() { this.status = 'stopped'; }
-  async delete() { this.status = 'deleted'; }
+  async stop() { this.stopCalls += 1; this.status = 'stopped'; }
+  async delete() { this.deleteCalls += 1; this.status = 'deleted'; }
 }
 
 class FakeFactory implements SandboxFactory {
@@ -85,4 +91,14 @@ test('readState uses closed worker operation rather than exposing eval on adapte
   assert.deepEqual(await browser.readState({ logicalSessionId: 'session_1', sandboxId: 'gbr-session_1' }, '/score'), { score: 1 });
   const decoded = JSON.parse(Buffer.from(factory.handle.calls.at(-1)!.args[1]!, 'base64url').toString('utf8'));
   assert.deepEqual(decoded, { type: 'read_state', session_id: 'session_1', path: '/score' });
+});
+
+test('end still stops and deletes the sandbox when closed worker cleanup fails', async () => {
+  const factory = new FakeFactory();
+  factory.handle.failEndWorker = true;
+  const browser = new VercelSandboxBrowser({ factory, snapshotId: 'snap_1' });
+  await browser.end({ logicalSessionId: 'session_1', sandboxId: 'gbr-session_1' });
+  assert.equal(factory.handle.stopCalls, 1);
+  assert.equal(factory.handle.deleteCalls, 1);
+  assert.equal(factory.handle.status, 'deleted');
 });
