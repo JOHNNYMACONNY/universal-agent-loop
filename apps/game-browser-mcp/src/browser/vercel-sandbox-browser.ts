@@ -32,6 +32,43 @@ export interface SandboxFactory {
   get(name: string): Promise<SandboxHandle>;
 }
 
+type SandboxProviderOperation = 'create' | 'get';
+
+function boundedProviderText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) return undefined;
+  return normalized.slice(0, 240);
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' ? value as Record<string, unknown> : undefined;
+}
+
+export function sanitizeSandboxProviderError(error: unknown, operation: SandboxProviderOperation): Error {
+  const record = recordValue(error);
+  const response = recordValue(record?.response);
+  const status = typeof response?.status === 'number' ? response.status : undefined;
+  const json = recordValue(record?.json);
+  const nestedError = json?.error;
+  const nestedRecord = recordValue(nestedError);
+
+  const code = boundedProviderText(nestedRecord?.code) ?? boundedProviderText(json?.code);
+  const providerMessage = boundedProviderText(nestedRecord?.message)
+    ?? boundedProviderText(typeof nestedError === 'string' ? nestedError : undefined)
+    ?? boundedProviderText(json?.message);
+
+  let message = `Sandbox provider ${operation} failed`;
+  if (status !== undefined) message += ` (HTTP ${status})`;
+  if (code) message += ` [${code}]`;
+  if (providerMessage) message += `: ${providerMessage}`;
+  else if (status === undefined && error instanceof Error) {
+    const fallback = boundedProviderText(error.message);
+    if (fallback) message += `: ${fallback}`;
+  }
+  return new Error(message);
+}
+
 class SdkHandle implements SandboxHandle {
   constructor(readonly sandbox: any) {}
   get name(): string { return this.sandbox.name; }
@@ -42,8 +79,14 @@ class SdkHandle implements SandboxHandle {
 }
 
 export class SdkFactory implements SandboxFactory {
-  async create(options: unknown): Promise<SandboxHandle> { return new SdkHandle(await Sandbox.create(options as any)); }
-  async get(name: string): Promise<SandboxHandle> { return new SdkHandle(await Sandbox.get({ name, resume: false } as any)); }
+  async create(options: unknown): Promise<SandboxHandle> {
+    try { return new SdkHandle(await Sandbox.create(options as any)); }
+    catch (error) { throw sanitizeSandboxProviderError(error, 'create'); }
+  }
+  async get(name: string): Promise<SandboxHandle> {
+    try { return new SdkHandle(await Sandbox.get({ name, resume: false } as any)); }
+    catch (error) { throw sanitizeSandboxProviderError(error, 'get'); }
+  }
 }
 
 interface Options {
