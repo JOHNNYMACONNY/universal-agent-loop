@@ -1,7 +1,8 @@
 import {
-  readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, rmSync,
+  readFileSync, writeFileSync, mkdirSync, existsSync, renameSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { withPersistentLock } from './persistent-lock.mjs';
 
 const encoded = process.argv[2];
 if (!encoded) respondError('INVALID_ARGUMENT', 'missing request');
@@ -21,20 +22,6 @@ function respondError(code, detail) {
   process.exit(1);
 }
 function output(data) { process.stdout.write(JSON.stringify({ ok: true, ...data })); }
-function sleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
-function withLock(fn) {
-  const deadline = Date.now() + 180_000;
-  while (true) {
-    try { mkdirSync(lockPath); break; }
-    catch (error) {
-      if (error?.code !== 'EEXIST') throw error;
-      if (Date.now() >= deadline) throw workerError('SESSION_RECOVERY_REQUIRED', 'sandbox ledger lock timed out');
-      sleep(10);
-    }
-  }
-  try { return fn(); }
-  finally { rmSync(lockPath, { recursive: true, force: true }); }
-}
 function workerError(code, detail) {
   const error = new Error(detail);
   error.workerCode = code;
@@ -376,7 +363,7 @@ function dispatch() {
   throw workerError('INVALID_ARGUMENT', 'unsupported worker operation');
 }
 
-try { withLock(dispatch); }
+try { withPersistentLock(lockPath, dispatch); }
 catch (error) {
   const code = error?.workerCode || 'INTERNAL_ERROR';
   const detail = error instanceof Error ? error.message : 'worker failure';
