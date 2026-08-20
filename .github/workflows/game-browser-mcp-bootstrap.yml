@@ -26,7 +26,7 @@ jobs:
       TARGET_BRANCH: chatgpt/autonomous-dev-loop
       PRINCIPAL_AUDIENCE: game-browser-mcp
       AGENT_BROWSER_VERSION: 0.34.0
-      REMOTE_EVIDENCE_PATH: apps/game-browser-mcp/remote-acceptance-evidence.json
+      REMOTE_EVIDENCE_PATH: ${{ github.workspace }}/apps/game-browser-mcp/remote-acceptance-evidence.json
     steps:
       - name: Resolve exact candidate
         id: candidate
@@ -180,9 +180,10 @@ jobs:
       - name: Build pinned browser Sandbox snapshot
         id: snapshot
         shell: bash
+        working-directory: apps/game-browser-mcp
         run: |
           set -euo pipefail
-          snapshot_id=$(node --import tsx apps/game-browser-mcp/scripts/create-browser-snapshot.ts | tail -n 1)
+          snapshot_id=$(node --import tsx scripts/create-browser-snapshot.ts | tail -n 1)
           if [[ ! "$snapshot_id" =~ ^snap_ ]]; then
             echo "::error::Browser snapshot builder did not return a snapshot ID"
             exit 1
@@ -279,25 +280,28 @@ jobs:
       - name: Register exact deployment capability
         id: registration
         shell: bash
+        working-directory: apps/game-browser-mcp
         env:
           REMOTE_RUNTIME_BASE_URL: ${{ steps.deploy.outputs.deployment_url }}
           VERCEL_DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
           EXPECTED_COMMIT_SHA: ${{ steps.candidate.outputs.sha }}
-        run: node --import tsx apps/game-browser-mcp/scripts/register-vercel-deployment.ts
+        run: node --import tsx scripts/register-vercel-deployment.ts
 
       - name: Issue short-lived acceptance principal
         id: principal
         shell: bash
-        run: node --import tsx apps/game-browser-mcp/scripts/issue-test-principal.ts
+        working-directory: apps/game-browser-mcp
+        run: node --import tsx scripts/issue-test-principal.ts
 
       - name: Run provider-backed Canvas gameplay acceptance
         shell: bash
+        working-directory: apps/game-browser-mcp
         env:
           REMOTE_MCP_URL: ${{ steps.deploy.outputs.deployment_url }}/mcp
           REMOTE_MCP_BEARER_TOKEN: ${{ steps.principal.outputs.bearer_token }}
           TARGET_REGISTRATION_ID: ${{ steps.registration.outputs.target_registration_id }}
           EXPECTED_COMMIT_SHA: ${{ steps.candidate.outputs.sha }}
-        run: npm run test:remote --prefix apps/game-browser-mcp
+        run: npm run test:remote
 
       - name: Upload exact-commit acceptance evidence
         uses: actions/upload-artifact@v4
