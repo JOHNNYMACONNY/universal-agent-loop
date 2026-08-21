@@ -169,7 +169,7 @@ function openApiSchema(request, env) {
           summary: 'Create or update one UTF-8 file on a guarded chatgpt/ working branch.',
           description: 'Never writes the repository default branch. Requires a chatgpt/ branch.',
           security,
-          'x-openai-isConsequential': true,
+          'x-openai-isConsequential': false,
           requestBody: {
             required: true,
             content: { 'application/json': { schema: { $ref: '#/components/schemas/WriteRepositoryFileRequest' } } },
@@ -213,7 +213,7 @@ function openApiSchema(request, env) {
           operationId: 'createWorkingBranch',
           summary: 'Create a new guarded chatgpt/ working branch.',
           security,
-          'x-openai-isConsequential': true,
+          'x-openai-isConsequential': false,
           requestBody: {
             required: true,
             content: { 'application/json': { schema: { $ref: '#/components/schemas/CreateWorkingBranchRequest' } } },
