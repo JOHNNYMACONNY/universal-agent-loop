@@ -244,7 +244,7 @@ function openApiSchema(request, env) {
             required: true,
             content: { 'application/json': { schema: { $ref: '#/components/schemas/CreateDraftPullRequestRequest' } } },
           },
-          responses: { '201': jsonResponse('#/components/schemas/PullRequestState'), ...errors },
+          responses: { '201': jsonResponse('#/components/schemas/LegacyDraftPullRequest'), ...errors },
         },
       },
       '/github/merge-pull-request': {
@@ -323,6 +323,15 @@ function openApiSchema(request, env) {
           properties: {
             repository: { type: 'string' }, number: { type: 'integer' }, state: { type: 'string' }, draft: { type: 'boolean' }, merged: { type: 'boolean' },
             mergeable: { type: ['boolean', 'null'] }, mergeableState: { type: 'string' }, title: { type: 'string' }, body: { type: 'string' },
+            head: { $ref: '#/components/schemas/RefState' }, base: { $ref: '#/components/schemas/RefState' }, url: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+        LegacyDraftPullRequest: {
+          type: 'object',
+          required: ['repository', 'number', 'state', 'draft', 'head', 'base'],
+          properties: {
+            repository: { type: 'string' }, number: { type: 'integer' }, state: { type: 'string' }, draft: { type: 'boolean' },
             head: { $ref: '#/components/schemas/RefState' }, base: { $ref: '#/components/schemas/RefState' }, url: { type: 'string' },
           },
           additionalProperties: false,
