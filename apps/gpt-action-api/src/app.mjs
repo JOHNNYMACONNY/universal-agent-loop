@@ -233,6 +233,20 @@ function openApiSchema(request, env) {
           responses: { '201': jsonResponse('#/components/schemas/WorkingBranch'), ...errors },
         },
       },
+      '/github/draft-pull-request': {
+        post: {
+          operationId: 'createDraftPullRequest',
+          summary: 'Create a backward-compatible draft pull request from a guarded chatgpt/ branch.',
+          description: 'Compatibility endpoint. The autonomous loop prefers createPullRequest; this endpoint always forces draft=true.',
+          security,
+          'x-openai-isConsequential': true,
+          requestBody: {
+            required: true,
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/CreateDraftPullRequestRequest' } } },
+          },
+          responses: { '201': jsonResponse('#/components/schemas/PullRequestState'), ...errors },
+        },
+      },
       '/github/merge-pull-request': {
         post: {
           operationId: 'mergePullRequest',
@@ -359,6 +373,15 @@ function openApiSchema(request, env) {
           additionalProperties: false,
         },
         CreatePullRequestRequest: {
+          type: 'object',
+          required: ['repository', 'head', 'title'],
+          properties: {
+            repository: { type: 'string' }, head: { type: 'string', pattern: '^chatgpt/.+' }, base: { type: 'string' },
+            title: { type: 'string', maxLength: 256 }, body: { type: 'string', maxLength: 20000 },
+          },
+          additionalProperties: false,
+        },
+        CreateDraftPullRequestRequest: {
           type: 'object',
           required: ['repository', 'head', 'title'],
           properties: {
