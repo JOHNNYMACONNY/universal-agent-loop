@@ -42,7 +42,7 @@ const expectedOperations = [
   ['/game-browser/session-end', 'endGameQaSession'],
 ];
 
-test('OpenAPI exposes exactly the bounded game-browser Action operations as non-consequential bearer calls', async () => {
+test('OpenAPI exposes exactly the bounded game-browser Action operations as non-consequential bearer calls with a camelCase public contract', async () => {
   const response = await handleActionRequest(request('/openapi.json', { method: 'GET' }), {
     env: bridgeEnv,
     fetchImpl: async () => { throw new Error('unexpected fetch'); },
@@ -59,11 +59,15 @@ test('OpenAPI exposes exactly the bounded game-browser Action operations as non-
 
   const exposedGamePaths = Object.keys(response.body.paths).filter((path) => path.startsWith('/game-browser/'));
   assert.deepEqual(exposedGamePaths.sort(), expectedOperations.map(([path]) => path).sort());
+  assert.deepEqual(response.body.components.schemas.GameQaSessionStartRequest.required, ['expectedCommitSha']);
+  assert.equal('expectedCommitSha' in response.body.components.schemas.GameQaSessionStartRequest.properties, true);
+  assert.equal('expected_commit_sha' in response.body.components.schemas.GameQaSessionStartRequest.properties, false);
+  assert.deepEqual(response.body.components.schemas.GameQaSessionRequest.required, ['sessionId']);
 });
 
 test('game-browser calls require the existing Action bearer before bridge access', async () => {
   const response = await handleActionRequest(
-    request('/game-browser/observe', { body: { session_id: 'session_123' } }),
+    request('/game-browser/observe', { body: { sessionId: 'session_123' } }),
     { env: bridgeEnv, fetchImpl: async () => { throw new Error('unexpected fetch'); } },
   );
   assert.equal(response.status, 401);
@@ -72,14 +76,14 @@ test('game-browser calls require the existing Action bearer before bridge access
 
 test('missing or invalid browser bridge configuration fails closed', async () => {
   const missing = await handleActionRequest(
-    request('/game-browser/observe', { authorization: 'Bearer action-secret', body: { session_id: 'session_123' } }),
+    request('/game-browser/observe', { authorization: 'Bearer action-secret', body: { sessionId: 'session_123' } }),
     { env: baseEnv, fetchImpl: async () => { throw new Error('unexpected fetch'); } },
   );
   assert.equal(missing.status, 503);
   assert.deepEqual(missing.body, { error: 'GAME_BROWSER_CONFIGURATION_ERROR' });
 
   const invalid = await handleActionRequest(
-    request('/game-browser/observe', { authorization: 'Bearer action-secret', body: { session_id: 'session_123' } }),
+    request('/game-browser/observe', { authorization: 'Bearer action-secret', body: { sessionId: 'session_123' } }),
     {
       env: { ...bridgeEnv, GAME_BROWSER_RUNTIME_BASE_URL: 'http://browser.example.test/path' },
       fetchImpl: async () => { throw new Error('unexpected fetch'); },
@@ -89,7 +93,7 @@ test('missing or invalid browser bridge configuration fails closed', async () =>
   assert.deepEqual(invalid.body, { error: 'GAME_BROWSER_CONFIGURATION_ERROR' });
 });
 
-test('session start proxies only to the fixed runtime bridge path with the dedicated upstream bearer', async () => {
+test('session start translates the public camelCase contract only to the fixed runtime bridge path with the dedicated upstream bearer', async () => {
   let captured;
   const upstream = {
     session_id: 'session_abc',
@@ -113,7 +117,7 @@ test('session start proxies only to the fixed runtime bridge path with the dedic
   const response = await handleActionRequest(
     request('/game-browser/session-start', {
       authorization: 'Bearer action-secret',
-      body: { expected_commit_sha: 'a'.repeat(40), viewport: { width: 1280, height: 720 } },
+      body: { expectedCommitSha: 'a'.repeat(40), viewport: { width: 1280, height: 720 } },
     }),
     { env: bridgeEnv, fetchImpl },
   );
@@ -136,28 +140,45 @@ test('session start proxies only to the fixed runtime bridge path with the dedic
   assert.equal(JSON.stringify(response.body).includes('/tmp/frame.png'), false);
 });
 
-test('each Action route maps to one fixed runtime bridge path and arbitrary browser paths are rejected', async () => {
+test('each Action route translates only its camelCase public fields to one fixed runtime bridge path', async () => {
   const calls = [];
-  const fetchImpl = async (url) => {
-    calls.push(String(url));
+  const fetchImpl = async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
     return jsonResponse({ ok: true });
   };
 
-  for (const [path] of expectedOperations.slice(1)) {
+  const cases = [
+    ['/game-browser/observe', { sessionId: 'session_123', expectedObservationSeq: 4 }, '/internal/gpt-action/observe', { session_id: 'session_123', expected_observation_seq: 4 }],
+    ['/game-browser/input', {
+      sessionId: 'session_123', actionBatchId: 'batch_1', expectedActionSeq: 2,
+      actions: [
+        { type: 'press', key: 'Enter', durationMs: 25 },
+        { type: 'scroll', deltaX: 1, deltaY: 2 },
+      ],
+    }, '/internal/gpt-action/input', {
+      session_id: 'session_123', action_batch_id: 'batch_1', expected_action_seq: 2,
+      actions: [
+        { type: 'press', key: 'Enter', duration_ms: 25 },
+        { type: 'scroll', delta_x: 1, delta_y: 2 },
+      ],
+    }],
+    ['/game-browser/read-state', { sessionId: 'session_123', path: '/player' }, '/internal/gpt-action/read-state', { session_id: 'session_123', path: '/player' }],
+    ['/game-browser/reset', { sessionId: 'session_123', mode: 'reload' }, '/internal/gpt-action/reset', { session_id: 'session_123', mode: 'reload' }],
+    ['/game-browser/session-end', { sessionId: 'session_123' }, '/internal/gpt-action/session-end', { session_id: 'session_123' }],
+  ];
+
+  for (const [path, body] of cases) {
     const response = await handleActionRequest(
-      request(path, { authorization: 'Bearer action-secret', body: { session_id: 'session_123' } }),
+      request(path, { authorization: 'Bearer action-secret', body }),
       { env: bridgeEnv, fetchImpl },
     );
     assert.equal(response.status, 200, path);
   }
 
-  assert.deepEqual(calls, [
-    'https://browser.example.test/internal/gpt-action/observe',
-    'https://browser.example.test/internal/gpt-action/input',
-    'https://browser.example.test/internal/gpt-action/read-state',
-    'https://browser.example.test/internal/gpt-action/reset',
-    'https://browser.example.test/internal/gpt-action/session-end',
-  ]);
+  assert.deepEqual(calls, cases.map(([, , upstreamPath, upstreamBody]) => ({
+    url: `https://browser.example.test${upstreamPath}`,
+    body: upstreamBody,
+  })));
 
   const before = calls.length;
   const rejected = await handleActionRequest(
@@ -173,7 +194,7 @@ test('bounded runtime errors may pass through but upstream secret/error bodies n
   const stale = await handleActionRequest(
     request('/game-browser/session-start', {
       authorization: 'Bearer action-secret',
-      body: { expected_commit_sha: 'b'.repeat(40) },
+      body: { expectedCommitSha: 'b'.repeat(40) },
     }),
     {
       env: bridgeEnv,
@@ -184,7 +205,7 @@ test('bounded runtime errors may pass through but upstream secret/error bodies n
   assert.deepEqual(stale.body, { error: 'STALE_DEPLOYMENT', message: 'no exact READY deployment exists' });
 
   const failed = await handleActionRequest(
-    request('/game-browser/observe', { authorization: 'Bearer action-secret', body: { session_id: 'session_123' } }),
+    request('/game-browser/observe', { authorization: 'Bearer action-secret', body: { sessionId: 'session_123' } }),
     {
       env: bridgeEnv,
       fetchImpl: async () => new Response('bridge-secret-value exploded with provider-token-123', { status: 500 }),
