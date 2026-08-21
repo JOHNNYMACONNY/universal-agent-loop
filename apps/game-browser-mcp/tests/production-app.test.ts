@@ -1,4 +1,4 @@
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -23,6 +23,25 @@ const ENV = {
   RUNTIME_ALLOWED_HOSTS: '127.0.0.1,localhost',
 };
 
+function getWithHost(port: number, hostHeader: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      hostname: '127.0.0.1',
+      port,
+      path: '/healthz',
+      method: 'GET',
+      headers: { host: hostHeader },
+    }, (response) => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => { body += chunk; });
+      response.on('end', () => resolve({ status: response.statusCode ?? 0, body }));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
 test('production composition is Vercel-only and declares every required secret/config category', () => {
   const declared = new Set<string>(PRODUCTION_ENVIRONMENT_NAMES);
   assert.equal(declared.has('UPSTASH_REDIS_REST_URL'), false);
@@ -36,6 +55,30 @@ test('production composition is Vercel-only and declares every required secret/c
 
 test('production composition fails closed when required environment is missing', () => {
   assert.throws(() => createProductionRuntimeApp({}), /VERCEL_API_TOKEN|configuration/i);
+});
+
+test('production accepts the Vercel stable project URL without an extra managed host variable', async () => {
+  const app = createProductionRuntimeApp({
+    ...ENV,
+    RUNTIME_ALLOWED_HOSTS: '',
+    VERCEL_URL: 'ual-game-browser-immutable.vercel.app',
+    VERCEL_PROJECT_PRODUCTION_URL: 'ual-game-browser-mcp.vercel.app',
+  });
+  const http = createServer(app);
+  await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
+  const address = http.address();
+  if (!address || typeof address === 'string') throw new Error('missing test address');
+  try {
+    const stable = await getWithHost(address.port, 'ual-game-browser-mcp.vercel.app');
+    assert.equal(stable.status, 200);
+    assert.deepEqual(JSON.parse(stable.body), { ok: true });
+
+    const immutable = await getWithHost(address.port, 'ual-game-browser-immutable.vercel.app');
+    assert.equal(immutable.status, 200);
+    assert.deepEqual(JSON.parse(immutable.body), { ok: true });
+  } finally {
+    await new Promise<void>((resolve, reject) => http.close((error) => error ? reject(error) : resolve()));
+  }
 });
 
 test('production app starts without Redis and protects internal registration without control token', async () => {
