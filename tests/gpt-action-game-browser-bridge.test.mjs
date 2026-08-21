@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { handleActionRequest } from '../apps/gpt-action-api/src/app.mjs';
+import { handleActionRequest } from '../apps/gpt-action-api/src/action-router.mjs';
 
 const baseEnv = {
   UAL_ACTION_API_KEY: 'action-secret',
