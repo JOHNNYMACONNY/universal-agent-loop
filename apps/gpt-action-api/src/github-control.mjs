@@ -110,6 +110,7 @@ async function githubJson(url, { token, fetchImpl, method = 'GET', body, expecte
   try {
     upstream = await fetchImpl(url, {
       method,
+      redirect: 'manual',
       headers: {
         accept: 'application/vnd.github+json',
         authorization: `Bearer ${token}`,
@@ -150,6 +151,9 @@ async function fetchRepository(repositoryInfo, context) {
   if (response.error) return response;
   if (typeof response.payload?.default_branch !== 'string' || typeof response.payload?.full_name !== 'string') {
     return { error: result(502, { error: 'GITHUB_CONTROL_INVALID_RESPONSE' }) };
+  }
+  if (response.payload.full_name.toLowerCase() !== repositoryInfo.repository.toLowerCase()) {
+    return { error: result(403, { error: 'REPOSITORY_NOT_ALLOWED' }) };
   }
   return response;
 }
