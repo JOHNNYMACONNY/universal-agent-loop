@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -20,11 +20,13 @@ function runWorker(root: string, bin: string, request: Record<string, unknown>) 
 function fakeAgentBrowser(bin: string) {
   const path = join(bin, 'agent-browser');
   writeFileSync(path, `#!/usr/bin/env node
+const { appendFileSync } = require('node:fs');
 const args = process.argv.slice(2);
 const json = (data) => process.stdout.write(JSON.stringify({ success: true, data }));
 const commandIndex = args.indexOf('--json') + 1;
 const command = args[commandIndex];
 const rest = args.slice(commandIndex + 1);
+if (process.env.GBR_ROOT) appendFileSync(process.env.GBR_ROOT + '/agent-browser.log', [command, ...rest].join(' ') + '\\n');
 if (command === 'open') json({ url: rest[0], title: 'Fixture' });
 else if (command === 'get' && rest[0] === 'url') json({ url: 'https://game.example.com/fixture/' });
 else if (command === 'get' && rest[0] === 'title') json({ title: 'Fixture Title' });
@@ -70,4 +72,37 @@ test('sandbox worker unwraps agent-browser 0.34 JSON data envelopes for observat
   const read = runWorker(root, bin, { type: 'read_state', session_id: session, path: '/score' });
   assert.equal(read.status, 0, read.stderr || read.stdout);
   assert.deepEqual(JSON.parse(read.stdout), { ok: true, value: { score: 7, player: { x: 12 } } });
+});
+
+test('reset reloads the target without duplicating heavyweight observation capture', () => {
+  const base = mkdtempSync(join(tmpdir(), 'gbr-reset-bounded-'));
+  const root = join(base, 'state');
+  const bin = join(base, 'bin');
+  const mkdir = spawnSync(process.execPath, ['-e', `require('fs').mkdirSync(${JSON.stringify(bin)},{recursive:true})`]);
+  assert.equal(mkdir.status, 0);
+  fakeAgentBrowser(bin);
+
+  const session = 'session_reset_bounded';
+  const start = runWorker(root, bin, {
+    type: 'start',
+    session_id: session,
+    target_url: 'https://game.example.com/fixture/',
+  });
+  assert.equal(start.status, 0, start.stderr || start.stdout);
+
+  const logPath = join(root, 'agent-browser.log');
+  writeFileSync(logPath, '');
+  const reset = runWorker(root, bin, { type: 'reset', session_id: session });
+  assert.equal(reset.status, 0, reset.stderr || reset.stdout);
+  const result = JSON.parse(reset.stdout);
+  assert.equal(result.ok, true);
+  assert.equal(result.observation.url, 'https://game.example.com/fixture/');
+
+  const calls = readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean);
+  assert.deepEqual(calls, [
+    'open https://game.example.com/fixture/',
+    'get url',
+  ]);
+  assert.deepEqual(result.observation.heldKeys, []);
+  assert.deepEqual(result.observation.heldPointerButtons, []);
 });
