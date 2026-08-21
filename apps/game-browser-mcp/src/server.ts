@@ -101,8 +101,11 @@ export function createProductionRuntimeApp(env: Record<string, string | undefine
   const runtimeAllowedHosts = [
     ...optionalHostList(env.RUNTIME_ALLOWED_HOSTS),
     ...(env.VERCEL_URL ? [env.VERCEL_URL.toLowerCase()] : []),
+    ...(env.VERCEL_PROJECT_PRODUCTION_URL ? [env.VERCEL_PROJECT_PRODUCTION_URL.toLowerCase()] : []),
   ];
-  if (runtimeAllowedHosts.length === 0) throw new Error('production configuration requires RUNTIME_ALLOWED_HOSTS or VERCEL_URL');
+  if (runtimeAllowedHosts.length === 0) {
+    throw new Error('production configuration requires RUNTIME_ALLOWED_HOSTS, VERCEL_URL, or VERCEL_PROJECT_PRODUCTION_URL');
+  }
 
   // Retain strict parsing for compatibility while coarse production rate limiting moves to Vercel WAF.
   const sessionStartsPerMinute = positiveRateLimit(env, 'SESSION_STARTS_PER_MINUTE', 6);
