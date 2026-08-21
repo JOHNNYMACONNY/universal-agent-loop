@@ -69,7 +69,9 @@ New bearer-authenticated operations:
 - `PUT /github/file` → `writeRepositoryFile`
 - `POST /github/draft-pull-request` → `createDraftPullRequest`
 
-All non-GET operations are declared consequential in the OpenAPI document.
+Routine implementation mutations are explicitly declared `x-openai-isConsequential: false` for `createWorkingBranch` and `writeRepositoryFile`. This lets the user grant an Always Allow choice once so an authorized implementation/repair loop does not acquire a per-write manual operator dependency. Server-side branch, repository, and path guards remain authoritative regardless of that UI permission.
+
+Draft pull-request creation is explicitly `x-openai-isConsequential: true` because it crosses the publication boundary and must retain user confirmation/authority. No other publication mutation is exposed.
 
 ## Validation
 
@@ -99,7 +101,7 @@ Commit messages, PR titles, and PR bodies are length-bounded.
 
 ### Tree read
 
-Resolve a requested ref through `GET /repos/{owner}/{repo}/git/trees/{encoded ref}?recursive=1`, reduce entries to `path`, `type`, `mode`, `sha`, and optional `size`, and cap to 1,000 entries.
+Resolve a requested ref through `GET /repos/{owner}/{repo}/git/trees/{ref}?recursive=1`. Encode each slash-delimited ref segment while preserving `/` separators so nested branch names such as `chatgpt/feature` remain valid GitHub path refs. Reduce entries to `path`, `type`, `mode`, `sha`, and optional `size`, and cap to 1,000 entries.
 
 ### Pull request read
 
@@ -111,7 +113,7 @@ Resolve a requested ref through `GET /repos/{owner}/{repo}/git/trees/{encoded re
 
 ### Create branch
 
-Resolve repository state, then resolve `fromRef` (or the default branch) through `GET /repos/{owner}/{repo}/git/ref/heads/{encoded ref}`. Create `refs/heads/chatgpt/...` with `POST /repos/{owner}/{repo}/git/refs`. Existing branch conflicts remain bounded 409/422 responses.
+Resolve repository state, then resolve `fromRef` (or the default branch) through `GET /repos/{owner}/{repo}/git/ref/heads/{ref}` using slash-preserving segment encoding for nested branch names. Create `refs/heads/chatgpt/...` with `POST /repos/{owner}/{repo}/git/refs`. Existing branch conflicts remain bounded 409/422 responses.
 
 ### Write file
 
@@ -149,9 +151,9 @@ Use TDD in observable GitHub CI:
 2. Push the test-only commit and observe root CI fail on the missing operations while unrelated game-browser checks remain unchanged.
 3. Implement the minimal control plane and request-body/search-param plumbing.
 4. Require fresh root CI PASS.
-5. Review the full branch patch for authority bypasses, default-branch writes, credential leakage, unbounded responses, arbitrary proxy behavior, and OpenAPI importability.
+5. Review the full branch patch for authority bypasses, default-branch writes, credential leakage, unbounded responses, arbitrary proxy behavior, OpenAPI importability, nested-ref handling, and any Action confirmation semantics that would reintroduce a manual dependency into routine implementation.
 
-Unit tests use mocked GitHub responses and must cover success paths plus: missing control token, owner rejection before GitHub access, traversal/path/ref rejection, default-branch write rejection, non-`chatgpt/` write rejection, oversize content, upstream-body secrecy, and draft PR forced true.
+Unit tests use mocked GitHub responses and must cover success paths plus: missing control token, owner rejection before GitHub access, traversal/path/ref rejection, default-branch write rejection, non-`chatgpt/` write rejection, oversize content, upstream-body secrecy, nested slash-separated refs, autonomous implementation permission flags, and draft PR forced/consequential true.
 
 ## Acceptance Criteria
 
@@ -161,13 +163,14 @@ Unit tests use mocked GitHub responses and must cover success paths plus: missin
 4. Repository owner allowlisting is enforced before GitHub access.
 5. Read operations provide enough bounded evidence to inspect repository state, files/tree, PR state, and workflow runs.
 6. Branch creation and file writes can only target `chatgpt/` branches and never the default branch.
-7. Draft PR creation is the only PR mutation and always uses `draft: true`.
-8. No merge/delete/workflow-dispatch/secret/settings/arbitrary-proxy endpoint exists.
-9. GitHub credentials and upstream response bodies are never leaked.
-10. Root `npm test` passes after implementation.
-11. Existing game-browser tests/typecheck/build remain green.
-12. A Vercel Preview generated from the branch serves the updated importable schema.
-13. Production is not changed without separate explicit merge/deploy authority.
+7. Routine branch creation and file writes are non-consequential Action operations so the user can Always Allow them for an autonomous implementation session; draft PR creation remains consequential and always uses `draft: true`.
+8. Draft PR creation is the only PR mutation.
+9. No merge/delete/workflow-dispatch/secret/settings/arbitrary-proxy endpoint exists.
+10. GitHub credentials and upstream response bodies are never leaked.
+11. Root `npm test` passes after implementation.
+12. Existing game-browser tests/typecheck/build remain green.
+13. A Vercel Preview generated from the branch serves the updated importable schema.
+14. Production is not changed without separate explicit merge/deploy authority.
 
 ## Credential Activation Boundary
 
