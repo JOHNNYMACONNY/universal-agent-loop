@@ -100,7 +100,7 @@ jobs:
             status=$(curl -sS -o "$output" -w '%{http_code}' -H "$auth" \
               "$api/v10/projects/$project_id/env?decrypt=true&teamId=$VERCEL_TEAM_ID")
             if [ "$status" != '200' ]; then
-              echo "::error::Unable to read Production environment for $project_id (HTTP $status)"
+              echo "::error::Unable to read Production environment metadata for $project_id (HTTP $status)"
               exit 1
             fi
           }
@@ -121,9 +121,33 @@ jobs:
           }
 
           production_value() {
-            local file="$1" key="$2" record
+            local project_id="$1" file="$2" key="$3" record env_id value_file status decrypted
             record=$(latest_record "$file" "$key")
-            jq -r 'if . == null then "" elif (.value | type) == "string" then .value else "" end' <<<"$record"
+            if [ "$record" = 'null' ]; then
+              printf ''
+              return 0
+            fi
+            env_id=$(jq -r '.id // empty' <<<"$record")
+            if [[ ! "$env_id" =~ ^[A-Za-z0-9_-]+$ ]]; then
+              echo "::error::Production environment metadata for $key in $project_id has no valid variable ID" >&2
+              exit 1
+            fi
+            value_file=$(mktemp)
+            status=$(curl -sS -o "$value_file" -w '%{http_code}' -H "$auth" \
+              "$api/v1/projects/$project_id/env/$env_id?teamId=$VERCEL_TEAM_ID")
+            if [ "$status" != '200' ]; then
+              rm -f "$value_file"
+              echo "::error::Unable to resolve Production value for $key in $project_id (HTTP $status)" >&2
+              exit 1
+            fi
+            decrypted=$(jq -r '.decrypted // false' "$value_file")
+            if [ "$decrypted" != 'true' ]; then
+              rm -f "$value_file"
+              echo "::error::Vercel did not confirm decrypted Production value for $key in $project_id" >&2
+              exit 1
+            fi
+            jq -r 'if (.value | type) == "string" then .value else "" end' "$value_file"
+            rm -f "$value_file"
           }
 
           production_present() {
@@ -135,7 +159,7 @@ jobs:
             local project_id="$1" file="$2" key="$3" value="$4" kind="$5" change_scope="$6"
             local current='' body status
             if production_present "$file" "$key"; then
-              current=$(production_value "$file" "$key")
+              current=$(production_value "$project_id" "$file" "$key")
               if [ "$current" = "$value" ]; then return 0; fi
             fi
             body=$(jq -n --arg key "$key" --arg value "$value" --arg type "$kind" \
@@ -152,8 +176,8 @@ jobs:
           }
 
           stable_secret() {
-            local file="$1" key="$2" value
-            value=$(production_value "$file" "$key")
+            local project_id="$1" file="$2" key="$3" value
+            value=$(production_value "$project_id" "$file" "$key")
             if [ -z "$value" ]; then value=$(openssl rand -hex 32); fi
             echo "::add-mask::$value" >&2
             printf '%s' "$value"
@@ -172,12 +196,12 @@ jobs:
             fi
           done
 
-          registration_control=$(stable_secret "$browser_env" REGISTRATION_CONTROL_TOKEN)
-          registration_capability=$(stable_secret "$browser_env" REGISTRATION_CAPABILITY_SECRET)
-          owner_binding=$(stable_secret "$browser_env" OWNER_BINDING_SECRET)
+          registration_control=$(stable_secret "$BROWSER_PROJECT_ID" "$browser_env" REGISTRATION_CONTROL_TOKEN)
+          registration_capability=$(stable_secret "$BROWSER_PROJECT_ID" "$browser_env" REGISTRATION_CAPABILITY_SECRET)
+          owner_binding=$(stable_secret "$BROWSER_PROJECT_ID" "$browser_env" OWNER_BINDING_SECRET)
 
-          bridge_token=$(production_value "$browser_env" GPT_ACTION_BRIDGE_TOKEN)
-          if [ -z "$bridge_token" ]; then bridge_token=$(production_value "$action_env" GAME_BROWSER_BRIDGE_TOKEN); fi
+          bridge_token=$(production_value "$BROWSER_PROJECT_ID" "$browser_env" GPT_ACTION_BRIDGE_TOKEN)
+          if [ -z "$bridge_token" ]; then bridge_token=$(production_value "$ACTION_PROJECT_ID" "$action_env" GAME_BROWSER_BRIDGE_TOKEN); fi
           if [ -z "$bridge_token" ]; then bridge_token=$(openssl rand -hex 32); fi
           echo "::add-mask::$bridge_token"
 
@@ -208,8 +232,8 @@ jobs:
                 apps/game-browser-mcp/scripts/create-browser-snapshot.ts
             } | sha256sum | awk '{print $1}'
           )
-          snapshot_id=$(production_value "$browser_env" AGENT_BROWSER_SNAPSHOT_ID)
-          stored_fingerprint=$(production_value "$browser_env" AGENT_BROWSER_SNAPSHOT_FINGERPRINT)
+          snapshot_id=$(production_value "$BROWSER_PROJECT_ID" "$browser_env" AGENT_BROWSER_SNAPSHOT_ID)
+          stored_fingerprint=$(production_value "$BROWSER_PROJECT_ID" "$browser_env" AGENT_BROWSER_SNAPSHOT_FINGERPRINT)
           snapshot_reusable=false
 
           if [[ "$snapshot_id" =~ ^snap_ ]] && [ "$stored_fingerprint" = "$snapshot_fingerprint" ]; then
