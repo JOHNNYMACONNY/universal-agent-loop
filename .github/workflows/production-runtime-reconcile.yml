@@ -157,20 +157,15 @@ jobs:
           fetch_env "$BROWSER_PROJECT_ID" "$browser_env"
           fetch_env "$ACTION_PROJECT_ID" "$action_env"
 
-          # Protected Action credentials are read-only. This reconciler never upserts them.
+          # Protected Action credentials are read-only. This reconciler never upserts them
+          # and never copies UAL_ACTION_API_KEY into GitHub workflow state. The bridge
+          # smoke receives the actual deployed value only inside `vercel env run`.
           for protected in UAL_ACTION_API_KEY GITHUB_TOKEN GITHUB_CONTROL_TOKEN GITHUB_CONTROL_OWNERS; do
             if ! production_present "$action_env" "$protected"; then
               echo "::error::Protected Action Production credential/config $protected is missing"
               exit 1
             fi
           done
-          action_key=$(production_value "$action_env" UAL_ACTION_API_KEY)
-          if [ -z "$action_key" ]; then
-            echo "::error::Production UAL_ACTION_API_KEY exists but is not readable to the Vercel control token; bridge verification cannot authenticate"
-            exit 1
-          fi
-          echo "::add-mask::$action_key"
-          echo "PRODUCTION_ACTION_KEY=$action_key" >> "$GITHUB_ENV"
 
           registration_control=$(stable_secret "$browser_env" REGISTRATION_CONTROL_TOKEN)
           registration_capability=$(stable_secret "$browser_env" REGISTRATION_CAPABILITY_SECRET)
@@ -479,11 +474,33 @@ jobs:
           CANDIDATE_SHA: ${{ steps.candidate.outputs.candidate_sha }}
         run: |
           set -euo pipefail
+          cat > /tmp/bridge-smoke.sh <<'BRIDGE_SMOKE'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          candidate_sha="$1"
+          action_url="$2"
+          if [ -z "${UAL_ACTION_API_KEY:-}" ]; then
+            echo "::error::Vercel Production environment did not inject UAL_ACTION_API_KEY"
+            exit 1
+          fi
+          echo "::add-mask::$UAL_ACTION_API_KEY"
+          session_id=''
+          cleanup() {
+            if [ -z "$session_id" ]; then return 0; fi
+            curl -sS -o /tmp/bridge-cleanup.json \
+              -X POST "$action_url/game-browser/session-end" \
+              -H "Authorization: Bearer $UAL_ACTION_API_KEY" \
+              -H 'Content-Type: application/json' \
+              --data "$(jq -cn --arg session "$session_id" '{sessionId:$session}')" \
+              >/dev/null || true
+          }
+          trap cleanup EXIT
+
           start_status=$(curl -sS -o /tmp/bridge-start.json -w '%{http_code}' \
-            -X POST "$ACTION_PRODUCTION_URL/game-browser/session-start" \
-            -H "Authorization: Bearer $PRODUCTION_ACTION_KEY" \
+            -X POST "$action_url/game-browser/session-start" \
+            -H "Authorization: Bearer $UAL_ACTION_API_KEY" \
             -H 'Content-Type: application/json' \
-            --data "$(jq -cn --arg sha "$CANDIDATE_SHA" '{expectedCommitSha:$sha,viewport:{width:1280,height:720}}')")
+            --data "$(jq -cn --arg sha "$candidate_sha" '{expectedCommitSha:$sha,viewport:{width:1280,height:720}}')")
           if [ "$start_status" != '200' ]; then
             echo "::error::Bridge session start failed (HTTP $start_status)"
             jq -r '.error // empty, .message // empty' /tmp/bridge-start.json || true
@@ -492,11 +509,10 @@ jobs:
           session_id=$(jq -r '.session_id // empty' /tmp/bridge-start.json)
           [ -n "$session_id" ] || { echo "::error::Bridge session start returned no session_id"; exit 1; }
           echo "::add-mask::$session_id"
-          echo "session_id=$session_id" >> "$GITHUB_OUTPUT"
 
           observe_status=$(curl -sS -o /tmp/bridge-observe.json -w '%{http_code}' \
-            -X POST "$ACTION_PRODUCTION_URL/game-browser/observe" \
-            -H "Authorization: Bearer $PRODUCTION_ACTION_KEY" \
+            -X POST "$action_url/game-browser/observe" \
+            -H "Authorization: Bearer $UAL_ACTION_API_KEY" \
             -H 'Content-Type: application/json' \
             --data "$(jq -cn --arg session "$session_id" '{sessionId:$session}')")
           [ "$observe_status" = '200' ] || { echo "::error::Bridge observe failed (HTTP $observe_status)"; exit 1; }
@@ -506,20 +522,21 @@ jobs:
             exit 1
           }
 
-      - name: End bounded bridge session
-        if: always()
-        shell: bash
-        env:
-          SESSION_ID: ${{ steps.bridge.outputs.session_id }}
-        run: |
-          set -euo pipefail
-          if [ -z "${SESSION_ID:-}" ]; then exit 0; fi
-          curl -sS -o /tmp/bridge-end.json -w '%{http_code}' \
-            -X POST "$ACTION_PRODUCTION_URL/game-browser/session-end" \
-            -H "Authorization: Bearer $PRODUCTION_ACTION_KEY" \
+          end_status=$(curl -sS -o /tmp/bridge-end.json -w '%{http_code}' \
+            -X POST "$action_url/game-browser/session-end" \
+            -H "Authorization: Bearer $UAL_ACTION_API_KEY" \
             -H 'Content-Type: application/json' \
-            --data "$(jq -cn --arg session "$SESSION_ID" '{sessionId:$session}')" \
-            | grep -Eq '^20[0-9]$'
+            --data "$(jq -cn --arg session "$session_id" '{sessionId:$session}')")
+          [[ "$end_status" =~ ^20[0-9]$ ]] || { echo "::error::Bridge session end failed (HTTP $end_status)"; exit 1; }
+          session_id=''
+          trap - EXIT
+          BRIDGE_SMOKE
+          chmod 700 /tmp/bridge-smoke.sh
+          export VERCEL_ORG_ID="$VERCEL_TEAM_ID"
+          export VERCEL_PROJECT_ID="$ACTION_PROJECT_ID"
+          npx -y vercel@59.1.4 env run --environment production \
+            --token "$VERCEL_TOKEN" --scope "$VERCEL_TEAM_SLUG" -- \
+            /tmp/bridge-smoke.sh "$CANDIDATE_SHA" "$ACTION_PRODUCTION_URL"
 
       - name: Record non-secret reconciliation evidence
         if: always()
