@@ -13,7 +13,9 @@ test('production reconcile status observer publishes a discoverable exact-run li
   assert.match(statusWorkflow, /types:\s*\[in_progress,\s*completed\]/, 'observer must publish both pending and terminal lifecycle transitions');
   assert.match(statusWorkflow, /permissions:[\s\S]*statuses:\s*write\b/, 'observer must have bounded permission to publish commit statuses');
   assert.match(statusWorkflow, /context:\s*['"]production-runtime-reconcile['"]/, 'status context must be stable and machine-discoverable');
-  assert.match(statusWorkflow, /state[\s\S]*pending[\s\S]*success[\s\S]*failure/, 'observer must map the run to pending/success/failure');
+  for (const state of ['pending', 'success', 'failure']) {
+    assert.match(statusWorkflow, new RegExp(`['"]${state}['"]`), `observer must map runs to ${state}`);
+  }
   assert.match(statusWorkflow, /run\.head_sha/, 'status must bind to the exact reconcile run head SHA');
   assert.match(statusWorkflow, /actions\/runs\/\$\{run\.id\}/, 'status target URL must point to the exact reconcile Actions run');
 });
