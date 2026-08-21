@@ -421,6 +421,31 @@ async function createPullRequest(request, env, fetchImpl) {
   return result(201, pullProjection(prepared.repositoryInfo.repository, created.payload));
 }
 
+async function createDraftPullRequest(request, env, fetchImpl) {
+  const parsed = parseBody(request.body);
+  if (parsed.error) return parsed.error;
+  const body = parsed.value;
+  if (!validWorkingBranch(body.head)) return result(400, { error: 'INVALID_WORKING_BRANCH' });
+  if (body.base !== undefined && !validRef(body.base)) return result(400, { error: 'INVALID_REF' });
+  const title = boundedText(body.title, MAX_PR_TITLE);
+  const pullBody = boundedText(body.body ?? '', MAX_PR_BODY, { allowEmpty: true });
+  if (title === null) return result(400, { error: 'INVALID_PULL_REQUEST_TITLE' });
+  if (pullBody === null) return result(400, { error: 'INVALID_PULL_REQUEST_BODY' });
+  const prepared = prepareBodyRepository(body, env);
+  if (prepared.error) return prepared.error;
+  const context = { token: prepared.config.token, fetchImpl };
+  const repository = await fetchRepository(prepared.repositoryInfo, context);
+  if (repository.error) return repository.error;
+  const base = body.base ?? repository.payload.default_branch;
+  if (body.head === base) return result(400, { error: 'INVALID_PULL_REQUEST_REFS' });
+  const created = await githubJson(
+    `${API}/repos/${prepared.repositoryInfo.owner}/${prepared.repositoryInfo.repo}/pulls`,
+    { ...context, method: 'POST', body: { title, body: pullBody, head: body.head, base, draft: true }, expected: [201] },
+  );
+  if (created.error) return created.error;
+  return result(201, pullProjection(prepared.repositoryInfo.repository, created.payload));
+}
+
 async function mergePullRequest(request, env, fetchImpl) {
   const parsed = parseBody(request.body);
   if (parsed.error) return parsed.error;
@@ -503,6 +528,9 @@ export async function handleGithubControlRequest(request, { env, fetchImpl }) {
     case '/github/branch':
       if (method !== 'POST') return methodNotAllowed('POST');
       return createWorkingBranch(request, env, fetchImpl);
+    case '/github/draft-pull-request':
+      if (method !== 'POST') return methodNotAllowed('POST');
+      return createDraftPullRequest(request, env, fetchImpl);
     case '/github/merge-pull-request':
       if (method !== 'POST') return methodNotAllowed('POST');
       return mergePullRequest(request, env, fetchImpl);
