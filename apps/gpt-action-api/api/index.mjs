@@ -6,6 +6,8 @@ export default async function handler(req, res) {
   const response = await handleActionRequest({
     method: req.method,
     path: url.pathname,
+    searchParams: Object.fromEntries(url.searchParams.entries()),
+    body: req.body,
     headers: req.headers,
   });
 
