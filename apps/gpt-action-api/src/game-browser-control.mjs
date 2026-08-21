@@ -2,13 +2,86 @@ const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_UPSTREAM_BYTES = 4 * 1024 * 1024;
 const MAX_ERROR_MESSAGE = 1024;
 
+function objectValue(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function translateSessionStart(body) {
+  const {
+    expectedCommitSha,
+    expected_commit_sha: _legacyExpectedCommitSha,
+    ...rest
+  } = body;
+  return { ...rest, expected_commit_sha: expectedCommitSha };
+}
+
+function translateSession(body) {
+  const { sessionId, session_id: _legacySessionId, ...rest } = body;
+  return { ...rest, session_id: sessionId };
+}
+
+function translateObserve(body) {
+  const {
+    sessionId,
+    expectedObservationSeq,
+    session_id: _legacySessionId,
+    expected_observation_seq: _legacyObservationSeq,
+    ...rest
+  } = body;
+  return {
+    ...rest,
+    session_id: sessionId,
+    ...(expectedObservationSeq === undefined ? {} : { expected_observation_seq: expectedObservationSeq }),
+  };
+}
+
+function translateAction(action) {
+  const value = objectValue(action);
+  if (!value) return action;
+  const {
+    durationMs,
+    deltaX,
+    deltaY,
+    duration_ms: _legacyDurationMs,
+    delta_x: _legacyDeltaX,
+    delta_y: _legacyDeltaY,
+    ...rest
+  } = value;
+  return {
+    ...rest,
+    ...(durationMs === undefined ? {} : { duration_ms: durationMs }),
+    ...(deltaX === undefined ? {} : { delta_x: deltaX }),
+    ...(deltaY === undefined ? {} : { delta_y: deltaY }),
+  };
+}
+
+function translateInput(body) {
+  const {
+    sessionId,
+    actionBatchId,
+    expectedActionSeq,
+    actions,
+    session_id: _legacySessionId,
+    action_batch_id: _legacyBatchId,
+    expected_action_seq: _legacyActionSeq,
+    ...rest
+  } = body;
+  return {
+    ...rest,
+    session_id: sessionId,
+    action_batch_id: actionBatchId,
+    expected_action_seq: expectedActionSeq,
+    actions: Array.isArray(actions) ? actions.map(translateAction) : actions,
+  };
+}
+
 const ROUTES = new Map([
-  ['/game-browser/session-start', '/internal/gpt-action/session-start'],
-  ['/game-browser/observe', '/internal/gpt-action/observe'],
-  ['/game-browser/input', '/internal/gpt-action/input'],
-  ['/game-browser/read-state', '/internal/gpt-action/read-state'],
-  ['/game-browser/reset', '/internal/gpt-action/reset'],
-  ['/game-browser/session-end', '/internal/gpt-action/session-end'],
+  ['/game-browser/session-start', { upstreamPath: '/internal/gpt-action/session-start', translate: translateSessionStart }],
+  ['/game-browser/observe', { upstreamPath: '/internal/gpt-action/observe', translate: translateObserve }],
+  ['/game-browser/input', { upstreamPath: '/internal/gpt-action/input', translate: translateInput }],
+  ['/game-browser/read-state', { upstreamPath: '/internal/gpt-action/read-state', translate: translateSession }],
+  ['/game-browser/reset', { upstreamPath: '/internal/gpt-action/reset', translate: translateSession }],
+  ['/game-browser/session-end', { upstreamPath: '/internal/gpt-action/session-end', translate: translateSession }],
 ]);
 
 function result(status, body, headers = {}) {
@@ -48,7 +121,7 @@ function parseBody(body) {
     try {
       const encoded = JSON.stringify(body);
       if (Buffer.byteLength(encoded, 'utf8') > MAX_REQUEST_BYTES) return { error: result(413, { error: 'GAME_BROWSER_REQUEST_TOO_LARGE' }) };
-      return { value: body, encoded };
+      return { value: body };
     } catch {
       return { error: result(400, { error: 'INVALID_JSON_BODY' }) };
     }
@@ -63,7 +136,17 @@ function parseBody(body) {
   try {
     const value = JSON.parse(text);
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('not object');
-    return { value, encoded: JSON.stringify(value) };
+    return { value };
+  } catch {
+    return { error: result(400, { error: 'INVALID_JSON_BODY' }) };
+  }
+}
+
+function encodeTranslatedBody(value) {
+  try {
+    const encoded = JSON.stringify(value);
+    if (Buffer.byteLength(encoded, 'utf8') > MAX_REQUEST_BYTES) return { error: result(413, { error: 'GAME_BROWSER_REQUEST_TOO_LARGE' }) };
+    return { encoded };
   } catch {
     return { error: result(400, { error: 'INVALID_JSON_BODY' }) };
   }
@@ -105,8 +188,8 @@ function boundedRuntimeError(status, body) {
 export async function handleGameBrowserControlRequest(request, { env = process.env, fetchImpl = globalThis.fetch } = {}) {
   const method = String(request.method ?? 'POST').toUpperCase();
   const path = String(request.path ?? '/');
-  const upstreamPath = ROUTES.get(path);
-  if (!upstreamPath) return result(404, { error: 'NOT_FOUND' });
+  const route = ROUTES.get(path);
+  if (!route) return result(404, { error: 'NOT_FOUND' });
   if (method !== 'POST') return result(405, { error: 'METHOD_NOT_ALLOWED' }, { allow: 'POST' });
 
   const config = configuration(env);
@@ -114,10 +197,13 @@ export async function handleGameBrowserControlRequest(request, { env = process.e
 
   const parsed = parseBody(request.body);
   if (parsed.error) return parsed.error;
+  const translated = route.translate(parsed.value);
+  const encoded = encodeTranslatedBody(translated);
+  if (encoded.error) return encoded.error;
 
   let upstream;
   try {
-    upstream = await fetchImpl(`${config.origin}${upstreamPath}`, {
+    upstream = await fetchImpl(`${config.origin}${route.upstreamPath}`, {
       method: 'POST',
       redirect: 'manual',
       headers: {
@@ -126,10 +212,15 @@ export async function handleGameBrowserControlRequest(request, { env = process.e
         'content-type': 'application/json',
         'user-agent': 'ual-gpt-action-api',
       },
-      body: parsed.encoded,
+      body: encoded.encoded,
     });
   } catch {
     return result(502, { error: 'GAME_BROWSER_UPSTREAM_ERROR', status: 0 });
+  }
+
+  const contentLength = Number(upstream.headers?.get?.('content-length'));
+  if (Number.isFinite(contentLength) && contentLength > MAX_UPSTREAM_BYTES) {
+    return result(502, { error: 'GAME_BROWSER_UPSTREAM_TOO_LARGE', status: upstream.status });
   }
 
   let text;
@@ -143,7 +234,7 @@ export async function handleGameBrowserControlRequest(request, { env = process.e
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return result(502, { error: 'GAME_BROWSER_UPSTREAM_ERROR', status: upstream.status });
 
   if (!upstream.ok) {
-    if (upstream.status === 401 || upstream.status >= 500 && upstream.status !== 503) {
+    if (upstream.status === 401 || (upstream.status >= 500 && upstream.status !== 503)) {
       return result(502, { error: 'GAME_BROWSER_UPSTREAM_ERROR', status: upstream.status });
     }
     return boundedRuntimeError(upstream.status, payload)
@@ -194,26 +285,36 @@ export function gameBrowserOpenApiPaths(security) {
 const sessionId = { type: 'string', minLength: 1, maxLength: 128 };
 const commitSha = { type: 'string', pattern: '^[0-9A-Fa-f]{40}$' };
 const nonnegativeInteger = { type: 'integer', minimum: 0 };
+const pointerButton = { type: 'string', enum: ['left', 'middle', 'right'] };
+const allowedKey = {
+  type: 'string',
+  enum: [
+    'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+    'w', 'a', 's', 'd', 'W', 'A', 'S', 'D',
+    ' ', 'Enter', 'Escape', 'Shift', 'Control',
+    'e', 'E', 'f', 'F', 'q', 'Q', 'r', 'R',
+  ],
+};
 
 const actionVariants = [
-  { type: 'object', required: ['type', 'key'], properties: { type: { const: 'key_down' }, key: { type: 'string', maxLength: 32 } }, additionalProperties: false },
-  { type: 'object', required: ['type', 'key'], properties: { type: { const: 'key_up' }, key: { type: 'string', maxLength: 32 } }, additionalProperties: false },
-  { type: 'object', required: ['type', 'key'], properties: { type: { const: 'press' }, key: { type: 'string', maxLength: 32 }, duration_ms: { type: 'integer', minimum: 0, maximum: 10000 } }, additionalProperties: false },
-  { type: 'object', required: ['type', 'x', 'y'], properties: { type: { const: 'pointer_move' }, x: { type: 'number' }, y: { type: 'number' } }, additionalProperties: false },
-  { type: 'object', required: ['type', 'delta_x', 'delta_y'], properties: { type: { const: 'pointer_move_relative' }, delta_x: { type: 'number' }, delta_y: { type: 'number' } }, additionalProperties: false },
-  { type: 'object', required: ['type'], properties: { type: { const: 'pointer_down' }, button: { enum: ['left', 'middle', 'right'] } }, additionalProperties: false },
-  { type: 'object', required: ['type'], properties: { type: { const: 'pointer_up' }, button: { enum: ['left', 'middle', 'right'] } }, additionalProperties: false },
-  { type: 'object', required: ['type', 'x', 'y'], properties: { type: { const: 'click' }, x: { type: 'number' }, y: { type: 'number' }, button: { enum: ['left', 'middle', 'right'] } }, additionalProperties: false },
-  { type: 'object', required: ['type', 'delta_y'], properties: { type: { const: 'scroll' }, delta_x: { type: 'number' }, delta_y: { type: 'number' } }, additionalProperties: false },
-  { type: 'object', required: ['type', 'duration_ms'], properties: { type: { const: 'wait' }, duration_ms: { type: 'integer', minimum: 0, maximum: 10000 } }, additionalProperties: false },
+  { type: 'object', required: ['type', 'key'], properties: { type: { type: 'string', enum: ['key_down'] }, key: allowedKey }, additionalProperties: false },
+  { type: 'object', required: ['type', 'key'], properties: { type: { type: 'string', enum: ['key_up'] }, key: allowedKey }, additionalProperties: false },
+  { type: 'object', required: ['type', 'key'], properties: { type: { type: 'string', enum: ['press'] }, key: allowedKey, durationMs: { type: 'integer', minimum: 1, maximum: 10000 } }, additionalProperties: false },
+  { type: 'object', required: ['type', 'x', 'y'], properties: { type: { type: 'string', enum: ['pointer_move'] }, x: { type: 'number' }, y: { type: 'number' } }, additionalProperties: false },
+  { type: 'object', required: ['type', 'deltaX', 'deltaY'], properties: { type: { type: 'string', enum: ['pointer_move_relative'] }, deltaX: { type: 'number' }, deltaY: { type: 'number' } }, additionalProperties: false },
+  { type: 'object', required: ['type'], properties: { type: { type: 'string', enum: ['pointer_down'] }, button: pointerButton }, additionalProperties: false },
+  { type: 'object', required: ['type'], properties: { type: { type: 'string', enum: ['pointer_up'] }, button: pointerButton }, additionalProperties: false },
+  { type: 'object', required: ['type', 'x', 'y'], properties: { type: { type: 'string', enum: ['click'] }, x: { type: 'number' }, y: { type: 'number' }, button: pointerButton }, additionalProperties: false },
+  { type: 'object', required: ['type', 'deltaY'], properties: { type: { type: 'string', enum: ['scroll'] }, deltaX: { type: 'number' }, deltaY: { type: 'number' } }, additionalProperties: false },
+  { type: 'object', required: ['type', 'durationMs'], properties: { type: { type: 'string', enum: ['wait'] }, durationMs: { type: 'integer', minimum: 1, maximum: 10000 } }, additionalProperties: false },
 ];
 
 export const gameBrowserOpenApiSchemas = {
   GameQaSessionStartRequest: {
     type: 'object',
-    required: ['expected_commit_sha'],
+    required: ['expectedCommitSha'],
     properties: {
-      expected_commit_sha: commitSha,
+      expectedCommitSha: commitSha,
       viewport: {
         type: 'object',
         required: ['width', 'height'],
@@ -224,27 +325,27 @@ export const gameBrowserOpenApiSchemas = {
     additionalProperties: false,
   },
   GameQaSessionRequest: {
-    type: 'object', required: ['session_id'], properties: { session_id: sessionId }, additionalProperties: false,
+    type: 'object', required: ['sessionId'], properties: { sessionId }, additionalProperties: false,
   },
   GameQaObserveRequest: {
-    type: 'object', required: ['session_id'], properties: { session_id: sessionId, expected_observation_seq: nonnegativeInteger }, additionalProperties: false,
+    type: 'object', required: ['sessionId'], properties: { sessionId, expectedObservationSeq: nonnegativeInteger }, additionalProperties: false,
   },
   GameQaInputRequest: {
     type: 'object',
-    required: ['session_id', 'action_batch_id', 'expected_action_seq', 'actions'],
+    required: ['sessionId', 'actionBatchId', 'expectedActionSeq', 'actions'],
     properties: {
-      session_id: sessionId,
-      action_batch_id: { type: 'string', minLength: 1, maxLength: 128 },
-      expected_action_seq: nonnegativeInteger,
+      sessionId,
+      actionBatchId: { type: 'string', minLength: 1, maxLength: 128 },
+      expectedActionSeq: nonnegativeInteger,
       actions: { type: 'array', minItems: 1, maxItems: 20, items: { oneOf: actionVariants } },
     },
     additionalProperties: false,
   },
   GameQaReadStateRequest: {
-    type: 'object', required: ['session_id'], properties: { session_id: sessionId, path: { type: 'string', maxLength: 512 } }, additionalProperties: false,
+    type: 'object', required: ['sessionId'], properties: { sessionId, path: { type: 'string', maxLength: 512 } }, additionalProperties: false,
   },
   GameQaResetRequest: {
-    type: 'object', required: ['session_id'], properties: { session_id: sessionId, mode: { enum: ['reload', 'target'] } }, additionalProperties: false,
+    type: 'object', required: ['sessionId'], properties: { sessionId, mode: { type: 'string', enum: ['reload', 'target'] } }, additionalProperties: false,
   },
   GameQaResult: { type: 'object', additionalProperties: true },
 };
