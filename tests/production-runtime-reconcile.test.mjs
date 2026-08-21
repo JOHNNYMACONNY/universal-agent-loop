@@ -77,7 +77,8 @@ test('browser snapshot is reused only while implementation and provider lifetime
 });
 
 test('production deployments are exact-main and verified rather than blind redeploys', () => {
-  assert.match(workflow, /actions\/checkout@v4[\s\S]*ref:\s*main/, 'Production checkout must explicitly use main');
+  assert.match(workflow, /actions\/checkout@v4[\s\S]*ref:\s*\$\{\{\s*github\.sha\s*\}\}/, 'Production checkout must use the immutable exact trigger SHA');
+  assert.match(workflow, /\[ "\$candidate_sha" = "\$GITHUB_SHA" \]/, 'Production candidate must be proven equal to the workflow trigger SHA');
   assert.match(workflow, /vercel@59\.1\.4 deploy --prod/, 'Production deploy must use the pinned Vercel CLI');
   assert.match(workflow, /githubCommitSha/, 'provider Git SHA must be inspected');
   assert.match(workflow, /projectId/, 'provider project identity must be inspected');
