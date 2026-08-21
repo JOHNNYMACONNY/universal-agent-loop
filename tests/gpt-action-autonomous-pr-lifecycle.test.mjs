@@ -66,6 +66,14 @@ test('OpenAPI exposes autonomous PR creation and reviewed merge without per-call
   assert.equal(paths['/github/merge-pull-request'].post['x-openai-isConsequential'], false);
   assert.equal(paths['/github/draft-pull-request'].post.operationId, 'createDraftPullRequest');
   assert.equal(paths['/github/draft-pull-request'].post['x-openai-isConsequential'], true);
+  assert.equal(
+    paths['/github/draft-pull-request'].post.responses['201'].content['application/json'].schema.$ref,
+    '#/components/schemas/LegacyDraftPullRequest',
+  );
+  assert.deepEqual(
+    response.body.components.schemas.LegacyDraftPullRequest.required,
+    ['repository', 'number', 'state', 'draft', 'head', 'base'],
+  );
 });
 
 test('PR creation publishes a normal PR from chatgpt branch to repository default branch', async () => {
