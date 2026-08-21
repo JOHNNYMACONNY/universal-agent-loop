@@ -84,6 +84,12 @@ test('production deployments are exact-main and verified rather than blind redep
   assert.match(workflow, /projectId/, 'provider project identity must be inspected');
   assert.match(workflow, /target[^\n]*production/, 'provider Production target must be checked');
   assert.match(workflow, /READY/, 'provider readiness must be checked');
+  assert.equal((workflow.match(/deployment_source=\$\(jq -r '\.source \/\/ empty'/g) ?? []).length, 2, 'both Production deployments must inspect provider deployment source');
+  assert.equal((workflow.match(/\[ "\$meta_ref" = 'HEAD' \] && \[ "\$deployment_source" = 'cli' \]/g) ?? []).length, 2, 'detached HEAD provenance is valid only for exact CLI deployments');
+  assert.equal((workflow.match(/\[ "\$meta_ref" = 'main' \]/g) ?? []).length, 2, 'normal Git-backed Production provenance must still require main');
+  assert.equal((workflow.match(/meta_org=\$\(jq -r '\.meta\.githubCommitOrg \/\/ \.meta\.githubOrg \/\/ empty'/g) ?? []).length, 2, 'both Production deployments must inspect provider repository owner');
+  assert.equal((workflow.match(/meta_repo=\$\(jq -r '\.meta\.githubCommitRepo \/\/ \.meta\.githubRepo \/\/ empty'/g) ?? []).length, 2, 'both Production deployments must inspect provider repository name');
+  assert.equal((workflow.match(/\[ "\$meta_org" = "\$TARGET_REPOSITORY_OWNER" \] && \[ "\$meta_repo" = "\$TARGET_REPOSITORY_NAME" \]/g) ?? []).length, 2, 'both Production deployments must prove canonical repository identity');
   assert.doesNotMatch(workflow, /\bredeploy\b/i, 'workflow must not recreate a stale deployment source through Redeploy');
 });
 
