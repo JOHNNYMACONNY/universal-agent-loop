@@ -1,5 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 
+import { handleGithubControlRequest } from './github-control.mjs';
+
 const REPOSITORY = 'JOHNNYMACONNY/universal-agent-loop';
 const CANONICAL_REF = 'main';
 const SKILL_NAME = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
@@ -15,6 +17,10 @@ function result(status, body, headers = {}) {
       ...headers,
     },
   };
+}
+
+function methodNotAllowed(allow) {
+  return result(405, { error: 'METHOD_NOT_ALLOWED' }, { allow });
 }
 
 function readHeader(headers, name) {
@@ -58,13 +64,50 @@ function baseUrl(request, env) {
   return `https://${host}`;
 }
 
+function bearerSecurity() {
+  return [{ bearerAuth: [] }];
+}
+
+function repositoryParameter() {
+  return {
+    name: 'repository',
+    in: 'query',
+    required: true,
+    description: 'Target GitHub repository in owner/repo form. The owner must be server-allowlisted.',
+    schema: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$' },
+  };
+}
+
+function jsonResponse(schemaRef, description = 'Success.') {
+  return {
+    description,
+    content: { 'application/json': { schema: { $ref: schemaRef } } },
+  };
+}
+
+function protectedErrors() {
+  return {
+    '400': { description: 'Invalid Action input.' },
+    '401': { description: 'Missing or invalid Action bearer key.' },
+    '403': { description: 'Repository boundary or GitHub permission denied.' },
+    '404': { description: 'Requested GitHub resource not found.' },
+    '409': { description: 'GitHub conflict.' },
+    '413': { description: 'Local request or file size limit exceeded.' },
+    '422': { description: 'GitHub validation conflict.' },
+    '502': { description: 'GitHub upstream failed or returned an invalid response.' },
+    '503': { description: 'Required server configuration is incomplete.' },
+  };
+}
+
 function openApiSchema(request, env) {
+  const security = bearerSecurity();
+  const errors = protectedErrors();
   return {
     openapi: '3.1.0',
     info: {
-      title: 'Universal Agent Loop Canonical Skills',
-      version: '0.1.0',
-      description: 'Private read-only GPT Action for retrieving the current canonical Universal Agent Loop skill definitions from GitHub.',
+      title: 'Universal Agent Loop Control Plane',
+      version: '0.2.0',
+      description: 'Private GPT Action for loading canonical Universal Agent Loop skills and performing bounded GitHub repository control-plane operations.',
     },
     servers: [{ url: baseUrl(request, env) }],
     paths: {
@@ -80,7 +123,7 @@ function openApiSchema(request, env) {
           operationId: 'getCanonicalSkill',
           summary: 'Retrieve a canonical Universal Agent Loop SKILL.md from the main branch.',
           description: 'Use this before starting or resuming work so the GPT follows the current canonical workflow rather than a cached copy.',
-          security: [{ bearerAuth: [] }],
+          security,
           parameters: [
             {
               name: 'name',
@@ -91,20 +134,105 @@ function openApiSchema(request, env) {
             },
           ],
           responses: {
-            '200': {
-              description: 'Current canonical skill.',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/SkillResponse' },
-                },
-              },
-            },
+            '200': jsonResponse('#/components/schemas/SkillResponse', 'Current canonical skill.'),
             '400': { description: 'Invalid skill name.' },
             '401': { description: 'Missing or invalid Action bearer key.' },
             '404': { description: 'Canonical skill does not exist.' },
             '502': { description: 'GitHub upstream failed.' },
             '503': { description: 'Server configuration is incomplete.' },
           },
+        },
+      },
+      '/github/repository': {
+        get: {
+          operationId: 'getRepositoryState',
+          summary: 'Inspect bounded repository metadata and the default branch.',
+          security,
+          parameters: [repositoryParameter()],
+          responses: { '200': jsonResponse('#/components/schemas/RepositoryState'), ...errors },
+        },
+      },
+      '/github/file': {
+        get: {
+          operationId: 'getRepositoryFile',
+          summary: 'Read one UTF-8 repository file at a ref.',
+          security,
+          parameters: [
+            repositoryParameter(),
+            { name: 'path', in: 'query', required: true, schema: { type: 'string', maxLength: 1024 } },
+            { name: 'ref', in: 'query', required: false, schema: { type: 'string', maxLength: 200 } },
+          ],
+          responses: { '200': jsonResponse('#/components/schemas/RepositoryFile'), ...errors },
+        },
+        put: {
+          operationId: 'writeRepositoryFile',
+          summary: 'Create or update one UTF-8 file on a guarded chatgpt/ working branch.',
+          description: 'Never writes the repository default branch. Requires a chatgpt/ branch.',
+          security,
+          'x-openai-isConsequential': true,
+          requestBody: {
+            required: true,
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/WriteRepositoryFileRequest' } } },
+          },
+          responses: { '200': jsonResponse('#/components/schemas/RepositoryFileWrite'), '201': jsonResponse('#/components/schemas/RepositoryFileWrite'), ...errors },
+        },
+      },
+      '/github/tree': {
+        get: {
+          operationId: 'getRepositoryTree',
+          summary: 'Read a bounded recursive repository tree at a ref.',
+          security,
+          parameters: [repositoryParameter(), { name: 'ref', in: 'query', required: false, schema: { type: 'string', maxLength: 200 } }],
+          responses: { '200': jsonResponse('#/components/schemas/RepositoryTree'), ...errors },
+        },
+      },
+      '/github/pull-request': {
+        get: {
+          operationId: 'getPullRequestState',
+          summary: 'Inspect one pull request and its head/base state.',
+          security,
+          parameters: [repositoryParameter(), { name: 'number', in: 'query', required: true, schema: { type: 'integer', minimum: 1 } }],
+          responses: { '200': jsonResponse('#/components/schemas/PullRequestState'), ...errors },
+        },
+      },
+      '/github/workflow-runs': {
+        get: {
+          operationId: 'getWorkflowRuns',
+          summary: 'Inspect up to 20 recent GitHub Actions workflow runs.',
+          security,
+          parameters: [
+            repositoryParameter(),
+            { name: 'branch', in: 'query', required: false, schema: { type: 'string', maxLength: 200 } },
+            { name: 'headSha', in: 'query', required: false, schema: { type: 'string', pattern: '^[A-Fa-f0-9]{6,64}$' } },
+          ],
+          responses: { '200': jsonResponse('#/components/schemas/WorkflowRuns'), ...errors },
+        },
+      },
+      '/github/branch': {
+        post: {
+          operationId: 'createWorkingBranch',
+          summary: 'Create a new guarded chatgpt/ working branch.',
+          security,
+          'x-openai-isConsequential': true,
+          requestBody: {
+            required: true,
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/CreateWorkingBranchRequest' } } },
+          },
+          responses: { '201': jsonResponse('#/components/schemas/WorkingBranch'), ...errors },
+        },
+      },
+      '/github/draft-pull-request': {
+        post: {
+          operationId: 'createDraftPullRequest',
+          summary: 'Create a draft pull request from a guarded chatgpt/ branch.',
+          description: 'The server always forces draft=true. The canonical skill must call this only with explicit PR publication authority.',
+          security,
+          'x-openai-isConsequential': true,
+          requestBody: {
+            required: true,
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/CreateDraftPullRequestRequest' } } },
+          },
+          responses: { '201': jsonResponse('#/components/schemas/DraftPullRequest'), ...errors },
         },
       },
     },
@@ -122,6 +250,119 @@ function openApiSchema(request, env) {
             content: { type: 'string' },
             sourceUrl: { type: 'string', format: 'uri' },
           },
+          additionalProperties: false,
+        },
+        RepositoryState: {
+          type: 'object',
+          required: ['repository', 'private', 'defaultBranch', 'archived', 'disabled'],
+          properties: {
+            repository: { type: 'string' }, private: { type: 'boolean' }, defaultBranch: { type: 'string' },
+            archived: { type: 'boolean' }, disabled: { type: 'boolean' }, visibility: { type: 'string' },
+            permissions: { type: 'object', additionalProperties: { type: 'boolean' } }, url: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+        RepositoryFile: {
+          type: 'object',
+          required: ['repository', 'ref', 'path', 'blobSha', 'content'],
+          properties: {
+            repository: { type: 'string' }, ref: { type: 'string' }, path: { type: 'string' }, blobSha: { type: 'string' },
+            content: { type: 'string' }, sourceUrl: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+        TreeEntry: {
+          type: 'object',
+          required: ['path', 'type', 'mode', 'sha'],
+          properties: { path: { type: 'string' }, type: { type: 'string' }, mode: { type: 'string' }, sha: { type: 'string' }, size: { type: 'integer' } },
+          additionalProperties: false,
+        },
+        RepositoryTree: {
+          type: 'object',
+          required: ['repository', 'ref', 'treeSha', 'truncated', 'limitReached', 'entries'],
+          properties: {
+            repository: { type: 'string' }, ref: { type: 'string' }, treeSha: { type: 'string' }, truncated: { type: 'boolean' },
+            limitReached: { type: 'boolean' }, entries: { type: 'array', maxItems: 1000, items: { $ref: '#/components/schemas/TreeEntry' } },
+          },
+          additionalProperties: false,
+        },
+        RefState: {
+          type: 'object',
+          properties: { ref: { type: 'string' }, sha: { type: 'string' } },
+          additionalProperties: false,
+        },
+        PullRequestState: {
+          type: 'object',
+          required: ['repository', 'number', 'state', 'draft', 'merged', 'head', 'base'],
+          properties: {
+            repository: { type: 'string' }, number: { type: 'integer' }, state: { type: 'string' }, draft: { type: 'boolean' }, merged: { type: 'boolean' },
+            mergeable: { type: ['boolean', 'null'] }, mergeableState: { type: 'string' }, title: { type: 'string' }, body: { type: 'string' },
+            head: { $ref: '#/components/schemas/RefState' }, base: { $ref: '#/components/schemas/RefState' }, url: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+        WorkflowRun: {
+          type: 'object',
+          required: ['id', 'name', 'event', 'status', 'headSha', 'runNumber'],
+          properties: {
+            id: { type: 'integer' }, name: { type: 'string' }, event: { type: 'string' }, status: { type: 'string' }, conclusion: { type: ['string', 'null'] },
+            headBranch: { type: ['string', 'null'] }, headSha: { type: 'string' }, url: { type: 'string' }, createdAt: { type: 'string' }, updatedAt: { type: 'string' }, runNumber: { type: 'integer' },
+          },
+          additionalProperties: false,
+        },
+        WorkflowRuns: {
+          type: 'object',
+          required: ['repository', 'runs'],
+          properties: { repository: { type: 'string' }, runs: { type: 'array', maxItems: 20, items: { $ref: '#/components/schemas/WorkflowRun' } } },
+          additionalProperties: false,
+        },
+        CreateWorkingBranchRequest: {
+          type: 'object',
+          required: ['repository', 'branch'],
+          properties: { repository: { type: 'string' }, branch: { type: 'string', pattern: '^chatgpt/.+' }, fromRef: { type: 'string' } },
+          additionalProperties: false,
+        },
+        WorkingBranch: {
+          type: 'object',
+          required: ['repository', 'branch', 'sha'],
+          properties: { repository: { type: 'string' }, branch: { type: 'string' }, sha: { type: 'string' } },
+          additionalProperties: false,
+        },
+        WriteRepositoryFileRequest: {
+          type: 'object',
+          required: ['repository', 'path', 'branch', 'message', 'content'],
+          properties: {
+            repository: { type: 'string' }, path: { type: 'string', maxLength: 1024 }, branch: { type: 'string', pattern: '^chatgpt/.+' },
+            message: { type: 'string', maxLength: 300 }, content: { type: 'string' }, sha: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+        RepositoryFileWrite: {
+          type: 'object',
+          required: ['repository', 'branch', 'path', 'contentSha', 'commitSha'],
+          properties: {
+            repository: { type: 'string' }, branch: { type: 'string' }, path: { type: 'string' }, contentSha: { type: 'string' }, commitSha: { type: 'string' },
+            contentUrl: { type: 'string' }, commitUrl: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+        CreateDraftPullRequestRequest: {
+          type: 'object',
+          required: ['repository', 'head', 'title'],
+          properties: {
+            repository: { type: 'string' }, head: { type: 'string', pattern: '^chatgpt/.+' }, base: { type: 'string' },
+            title: { type: 'string', maxLength: 256 }, body: { type: 'string', maxLength: 20000 },
+          },
+          additionalProperties: false,
+        },
+        DraftPullRequest: {
+          type: 'object',
+          required: ['repository', 'number', 'state', 'draft', 'head', 'base'],
+          properties: {
+            repository: { type: 'string' }, number: { type: 'integer' }, state: { type: 'string' }, draft: { type: 'boolean' },
+            head: { $ref: '#/components/schemas/RefState' }, base: { $ref: '#/components/schemas/RefState' }, url: { type: 'string' },
+          },
+          additionalProperties: false,
         },
       },
       securitySchemes: {
@@ -188,17 +429,35 @@ async function fetchCanonicalSkill(name, env, fetchImpl) {
   });
 }
 
+function authenticate(request, env) {
+  const actionKey = env.UAL_ACTION_API_KEY?.trim();
+  if (!actionKey) return configurationError();
+  const presented = bearerToken(readHeader(request.headers, 'authorization'));
+  if (!safeEqual(presented, actionKey)) return result(401, { error: 'UNAUTHORIZED' }, { 'www-authenticate': 'Bearer' });
+  return null;
+}
+
 export async function handleActionRequest(request, { env = process.env, fetchImpl = globalThis.fetch } = {}) {
-  if (String(request.method ?? 'GET').toUpperCase() !== 'GET') {
-    return result(405, { error: 'METHOD_NOT_ALLOWED' }, { allow: 'GET' });
+  const method = String(request.method ?? 'GET').toUpperCase();
+  const path = String(request.path ?? '/');
+
+  if (path === '/health') {
+    if (method !== 'GET') return methodNotAllowed('GET');
+    return result(200, { ok: true, service: 'ual-gpt-action-api' });
+  }
+  if (path === '/openapi.json') {
+    if (method !== 'GET') return methodNotAllowed('GET');
+    return result(200, openApiSchema(request, env));
   }
 
-  const path = String(request.path ?? '/');
-  if (path === '/health') return result(200, { ok: true, service: 'ual-gpt-action-api' });
-  if (path === '/openapi.json') return result(200, openApiSchema(request, env));
+  const authError = authenticate(request, env);
+  if (authError) return authError;
+
+  if (path.startsWith('/github/')) return handleGithubControlRequest(request, { env, fetchImpl });
 
   const match = /^\/skills\/(.+)$/.exec(path);
   if (!match) return result(404, { error: 'NOT_FOUND' });
+  if (method !== 'GET') return methodNotAllowed('GET');
 
   let name;
   try {
@@ -207,11 +466,6 @@ export async function handleActionRequest(request, { env = process.env, fetchImp
     return result(400, { error: 'INVALID_SKILL_NAME' });
   }
   if (!SKILL_NAME.test(name)) return result(400, { error: 'INVALID_SKILL_NAME' });
-
-  const actionKey = env.UAL_ACTION_API_KEY?.trim();
-  if (!actionKey) return configurationError();
-  const presented = bearerToken(readHeader(request.headers, 'authorization'));
-  if (!safeEqual(presented, actionKey)) return result(401, { error: 'UNAUTHORIZED' }, { 'www-authenticate': 'Bearer' });
 
   return fetchCanonicalSkill(name, env, fetchImpl);
 }
