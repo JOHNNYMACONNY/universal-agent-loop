@@ -20,7 +20,7 @@ jobs:
       VERCEL_TEAM_ID: team_3LfEMNVsAEbXKLoCrnzXQzrF
       VERCEL_TEAM_SLUG: johnny-maconnys-projects
       VERCEL_PROJECT_ID: prj_80jo2dodxOmSSvX6muUc7Tc7wIo1
-      SOURCE_BRANCH: chatgpt/gpt-action-api-step-3a
+      SOURCE_PREVIEW_URL: https://ual-gpt-action-k1xu1x2sm-johnny-maconnys-projects.vercel.app
       PRODUCTION_URL: https://ual-gpt-action-api.vercel.app
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
           ref: main
           fetch-depth: 1
 
-      - name: Resolve saved GPT Action key and align Production
+      - name: Identify saved GPT key from verified Preview and align Production
         shell: bash
         run: |
           set -euo pipefail
@@ -38,19 +38,31 @@ jobs:
             "$api/v10/projects/$VERCEL_PROJECT_ID/env?decrypt=true&teamId=$VERCEL_TEAM_ID")
           [ "$status" = '200' ] || { echo "::error::Unable to read Vercel env (HTTP $status)"; exit 1; }
 
-          source_key=$(jq -r --arg branch "$SOURCE_BRANCH" '
-            [.envs[]
-              | select(
-                  .key == "UAL_ACTION_API_KEY"
-                  and (.gitBranch // "") == $branch
-                  and ((.target // []) | index("preview"))
-                )
-            ]
-            | sort_by(.updatedAt // .createdAt // 0) | last
-            | .value // empty
-          ' /tmp/env.json)
-          [ -n "$source_key" ] || { echo "::error::Saved branch-scoped GPT Action key was not found"; exit 1; }
-          echo "::add-mask::$source_key"
+          jq -c '
+            [.envs[] | select(.key == "UAL_ACTION_API_KEY")]
+            | sort_by(.updatedAt // .createdAt // 0)
+            | .[]
+            | {target:(.target // []),gitBranch:(.gitBranch // ""),type:(.type // ""),updatedAt:(.updatedAt // .createdAt // 0),value:(.value // "")}
+          ' /tmp/env.json > /tmp/action-keys.jsonl
+
+          source_key=''
+          index=0
+          while IFS= read -r record; do
+            index=$((index + 1))
+            value=$(printf '%s' "$record" | jq -r '.value')
+            [ -n "$value" ] || continue
+            echo "::add-mask::$value"
+            probe_status=$(curl -sS -o /tmp/source-probe.json -w '%{http_code}' \
+              -H "Authorization: Bearer $value" "$SOURCE_PREVIEW_URL/skills/autonomous-dev-loop")
+            echo "Stored Action key record $index source-preview status: $probe_status"
+            if [ "$probe_status" != '401' ]; then
+              source_key="$value"
+              echo "Saved GPT key identified as stored record $index without disclosure."
+              break
+            fi
+          done < /tmp/action-keys.jsonl
+
+          [ -n "$source_key" ] || { echo "::error::No stored Action key matches the Preview previously authenticated by the saved GPT"; exit 1; }
 
           body=$(jq -n --arg value "$source_key" '{key:"UAL_ACTION_API_KEY",value:$value,type:"encrypted",target:["production"]}')
           promote_status=$(curl -sS -o /tmp/upsert.json -w '%{http_code}' -X POST \
@@ -58,7 +70,7 @@ jobs:
             -H "$auth" -H 'Content-Type: application/json' --data "$body")
           [ "$promote_status" = '200' ] || [ "$promote_status" = '201' ] || { echo "::error::Unable to align Production Action key (HTTP $promote_status)"; exit 1; }
           echo "SAVED_GPT_ACTION_KEY=$source_key" >> "$GITHUB_ENV"
-          rm -f /tmp/env.json /tmp/upsert.json
+          rm -f /tmp/env.json /tmp/action-keys.jsonl /tmp/source-probe.json /tmp/upsert.json
 
       - name: Deploy current main with aligned Production environment
         id: deploy
@@ -67,14 +79,12 @@ jobs:
           set -euo pipefail
           candidate_sha=$(git rev-parse HEAD)
           export VERCEL_ORG_ID="$VERCEL_TEAM_ID"
-          export VERCEL_PROJECT_ID="$VERCEL_PROJECT_ID"
           deployment_url=$(npx -y vercel@59.1.4 deploy --prod --yes --token "$VERCEL_TOKEN" --scope "$VERCEL_TEAM_SLUG" --cwd "$GITHUB_WORKSPACE" | tail -n 1)
           [[ "$deployment_url" =~ ^https://[A-Za-z0-9.-]+\.vercel\.app$ ]] || { echo "::error::Vercel did not return a Production URL"; exit 1; }
           deployment_host=${deployment_url#https://}
           for attempt in $(seq 1 60); do
             curl -sS -H "Authorization: Bearer $VERCEL_TOKEN" \
-              "https://api.vercel.com/v13/deployments/$deployment_host?teamId=$VERCEL_TEAM_ID&withGitRepoInfo=true" \
-              -o /tmp/deployment.json
+              "https://api.vercel.com/v13/deployments/$deployment_host?teamId=$VERCEL_TEAM_ID&withGitRepoInfo=true" -o /tmp/deployment.json
             state=$(jq -r '.readyState // .status // .state // empty' /tmp/deployment.json)
             [ "$state" = 'READY' ] && break
             [ "$state" != 'ERROR' ] && [ "$state" != 'CANCELED' ] || { echo "::error::Production deployment failed"; exit 1; }
