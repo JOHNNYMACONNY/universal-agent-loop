@@ -194,11 +194,6 @@ jobs:
           upsert_env "$ACTION_PROJECT_ID" "$action_env" GAME_BROWSER_RUNTIME_BASE_URL "$BROWSER_PRODUCTION_URL" plain action
           upsert_env "$ACTION_PROJECT_ID" "$action_env" GAME_BROWSER_BRIDGE_TOKEN "$bridge_token" encrypted action
 
-          echo "REGISTRATION_CONTROL_TOKEN=$registration_control" >> "$GITHUB_ENV"
-          echo "REGISTRATION_CAPABILITY_SECRET=$registration_capability" >> "$GITHUB_ENV"
-          echo "OWNER_BINDING_SECRET=$owner_binding" >> "$GITHUB_ENV"
-          echo "PRINCIPAL_AUDIENCE=game-browser-mcp" >> "$GITHUB_ENV"
-
           snapshot_fingerprint=$(
             {
               printf 'agent-browser=%s\n' "$AGENT_BROWSER_VERSION"
@@ -447,13 +442,25 @@ jobs:
           REMOTE_RUNTIME_BASE_URL: ${{ env.BROWSER_PRODUCTION_URL }}
           VERCEL_DEPLOYMENT_ID: ${{ steps.browser_deploy.outputs.deployment_id }}
           EXPECTED_COMMIT_SHA: ${{ steps.candidate.outputs.candidate_sha }}
-        run: node --import tsx scripts/register-vercel-deployment.ts
+        run: |
+          set -euo pipefail
+          export VERCEL_ORG_ID="$VERCEL_TEAM_ID"
+          export VERCEL_PROJECT_ID="$BROWSER_PROJECT_ID"
+          npx -y vercel@59.1.4 env run --environment production \
+            --token "$VERCEL_TOKEN" --scope "$VERCEL_TEAM_SLUG" -- \
+            node --import tsx scripts/register-vercel-deployment.ts
 
       - name: Issue short-lived Production acceptance principal
         id: principal
         shell: bash
         working-directory: apps/game-browser-mcp
-        run: node --import tsx scripts/issue-test-principal.ts
+        run: |
+          set -euo pipefail
+          export VERCEL_ORG_ID="$VERCEL_TEAM_ID"
+          export VERCEL_PROJECT_ID="$BROWSER_PROJECT_ID"
+          npx -y vercel@59.1.4 env run --environment production \
+            --token "$VERCEL_TOKEN" --scope "$VERCEL_TEAM_SLUG" -- \
+            node --import tsx scripts/issue-test-principal.ts
 
       - name: Run provider-backed Production Canvas gameplay acceptance
         id: gameplay
