@@ -88,7 +88,7 @@ APPROVED_REDIRECT_HOSTS=
 PRINCIPAL_AUDIENCE=game-browser-mcp
 ```
 
-`RUNTIME_ALLOWED_HOSTS` remains optional because the runtime accepts Vercel's injected `VERCEL_URL`.
+The runtime accepts explicit `RUNTIME_ALLOWED_HOSTS` when supplied, the immutable Vercel `VERCEL_URL`, and Vercel's system `VERCEL_PROJECT_PRODUCTION_URL`. That last host is what makes stable Production aliases work without another manually managed environment variable.
 
 ## Managed Action Production configuration
 
