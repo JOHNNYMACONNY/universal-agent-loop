@@ -91,7 +91,7 @@ function protectedErrors() {
     '401': { description: 'Missing or invalid Action bearer key.' },
     '403': { description: 'Repository boundary or GitHub permission denied.' },
     '404': { description: 'Requested GitHub resource not found.' },
-    '409': { description: 'GitHub conflict.' },
+    '409': { description: 'GitHub conflict or stale review/merge state.' },
     '413': { description: 'Local request or file size limit exceeded.' },
     '422': { description: 'GitHub validation conflict.' },
     '502': { description: 'GitHub upstream failed or returned an invalid response.' },
@@ -106,7 +106,7 @@ function openApiSchema(request, env) {
     openapi: '3.1.0',
     info: {
       title: 'Universal Agent Loop Control Plane',
-      version: '0.2.0',
+      version: '0.3.0',
       description: 'Private GPT Action for loading canonical Universal Agent Loop skills and performing bounded GitHub repository control-plane operations.',
     },
     servers: [{ url: baseUrl(request, env) }],
@@ -194,6 +194,18 @@ function openApiSchema(request, env) {
           parameters: [repositoryParameter(), { name: 'number', in: 'query', required: true, schema: { type: 'integer', minimum: 1 } }],
           responses: { '200': jsonResponse('#/components/schemas/PullRequestState'), ...errors },
         },
+        post: {
+          operationId: 'createPullRequest',
+          summary: 'Create a normal pull request from a guarded chatgpt/ branch to the default branch.',
+          description: 'PR creation is part of the autonomous development loop; code review still gates merge.',
+          security,
+          'x-openai-isConsequential': false,
+          requestBody: {
+            required: true,
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/CreatePullRequestRequest' } } },
+          },
+          responses: { '201': jsonResponse('#/components/schemas/PullRequestState'), ...errors },
+        },
       },
       '/github/workflow-runs': {
         get: {
@@ -221,18 +233,18 @@ function openApiSchema(request, env) {
           responses: { '201': jsonResponse('#/components/schemas/WorkingBranch'), ...errors },
         },
       },
-      '/github/draft-pull-request': {
+      '/github/merge-pull-request': {
         post: {
-          operationId: 'createDraftPullRequest',
-          summary: 'Create a draft pull request from a guarded chatgpt/ branch.',
-          description: 'The server always forces draft=true. The canonical skill must call this only with explicit PR publication authority.',
+          operationId: 'mergePullRequest',
+          summary: 'Merge the exact pull-request head that passed the autonomous code-review gate.',
+          description: 'Requires reviewedHeadSha. The server rejects stale heads, drafts, closed PRs, non-chatgpt heads, and non-default bases.',
           security,
-          'x-openai-isConsequential': true,
+          'x-openai-isConsequential': false,
           requestBody: {
             required: true,
-            content: { 'application/json': { schema: { $ref: '#/components/schemas/CreateDraftPullRequestRequest' } } },
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/MergePullRequestRequest' } } },
           },
-          responses: { '201': jsonResponse('#/components/schemas/DraftPullRequest'), ...errors },
+          responses: { '200': jsonResponse('#/components/schemas/PullRequestMerge'), ...errors },
         },
       },
     },
@@ -346,7 +358,7 @@ function openApiSchema(request, env) {
           },
           additionalProperties: false,
         },
-        CreateDraftPullRequestRequest: {
+        CreatePullRequestRequest: {
           type: 'object',
           required: ['repository', 'head', 'title'],
           properties: {
@@ -355,12 +367,26 @@ function openApiSchema(request, env) {
           },
           additionalProperties: false,
         },
-        DraftPullRequest: {
+        MergePullRequestRequest: {
           type: 'object',
-          required: ['repository', 'number', 'state', 'draft', 'head', 'base'],
+          required: ['repository', 'number', 'reviewedHeadSha'],
           properties: {
-            repository: { type: 'string' }, number: { type: 'integer' }, state: { type: 'string' }, draft: { type: 'boolean' },
-            head: { $ref: '#/components/schemas/RefState' }, base: { $ref: '#/components/schemas/RefState' }, url: { type: 'string' },
+            repository: { type: 'string' },
+            number: { type: 'integer', minimum: 1 },
+            reviewedHeadSha: { type: 'string', pattern: '^[A-Fa-f0-9]{6,64}$' },
+          },
+          additionalProperties: false,
+        },
+        PullRequestMerge: {
+          type: 'object',
+          required: ['repository', 'number', 'reviewedHeadSha', 'mergeMethod', 'merged', 'mergeSha'],
+          properties: {
+            repository: { type: 'string' },
+            number: { type: 'integer' },
+            reviewedHeadSha: { type: 'string' },
+            mergeMethod: { type: 'string', enum: ['merge', 'squash', 'rebase'] },
+            merged: { type: 'boolean' },
+            mergeSha: { type: 'string' },
           },
           additionalProperties: false,
         },
