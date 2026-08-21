@@ -45,13 +45,16 @@ test('production env reconciliation reuses values and manages only bounded crede
   assert.doesNotMatch(workflow, /upsert_env[^\n]*(UAL_ACTION_API_KEY|GITHUB_TOKEN|GITHUB_CONTROL_TOKEN|GITHUB_CONTROL_OWNERS)/, 'protected Action credentials must never be upserted');
 });
 
-test('browser snapshot is reused by deterministic implementation fingerprint', () => {
+test('browser snapshot is reused only while implementation and provider lifetime remain valid', () => {
   assert.match(workflow, /AGENT_BROWSER_VERSION:\s*0\.34\.0/, 'browser version must remain pinned');
   assert.match(workflow, /sandbox\/worker\.mjs/, 'worker implementation must participate in snapshot fingerprint');
+  assert.match(workflow, /sandbox\/persistent-lock\.mjs/, 'persistent lock implementation must participate in snapshot fingerprint');
   assert.match(workflow, /create-browser-snapshot\.ts/, 'snapshot builder must participate in snapshot fingerprint');
   assert.match(workflow, /sha256sum/, 'snapshot inputs must be hashed deterministically');
   assert.match(workflow, /AGENT_BROWSER_SNAPSHOT_FINGERPRINT/, 'snapshot fingerprint must be persisted');
   assert.match(workflow, /snapshot_id=.*AGENT_BROWSER_SNAPSHOT_ID/, 'existing snapshot ID must be considered for reuse');
+  assert.match(workflow, /\/v2\/sandboxes\/snapshots\/\$snapshot_id/, 'stored snapshot existence must be checked through the provider API');
+  assert.match(workflow, /3 \* 24 \* 60 \* 60 \* 1000/, 'snapshot must refresh before the final three days of its lifetime');
   assert.match(workflow, /scripts\/create-browser-snapshot\.ts/, 'a stale/missing snapshot must be rebuilt through the canonical builder');
 });
 
