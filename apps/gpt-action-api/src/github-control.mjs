@@ -167,6 +167,18 @@ function pullProjection(repository, payload) {
   };
 }
 
+function legacyDraftPullProjection(repository, payload) {
+  return {
+    repository,
+    number: payload.number,
+    state: payload.state,
+    draft: Boolean(payload.draft),
+    head: { ref: payload.head?.ref, sha: payload.head?.sha },
+    base: { ref: payload.base?.ref, sha: payload.base?.sha },
+    url: payload.html_url,
+  };
+}
+
 function chooseMergeMethod(repository) {
   if (repository.allow_squash_merge) return 'squash';
   if (repository.allow_merge_commit) return 'merge';
@@ -443,7 +455,7 @@ async function createDraftPullRequest(request, env, fetchImpl) {
     { ...context, method: 'POST', body: { title, body: pullBody, head: body.head, base, draft: true }, expected: [201] },
   );
   if (created.error) return created.error;
-  return result(201, pullProjection(prepared.repositoryInfo.repository, created.payload));
+  return result(201, legacyDraftPullProjection(prepared.repositoryInfo.repository, created.payload));
 }
 
 async function mergePullRequest(request, env, fetchImpl) {
