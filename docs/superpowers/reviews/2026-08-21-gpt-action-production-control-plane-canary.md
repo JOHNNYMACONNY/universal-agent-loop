@@ -36,7 +36,9 @@ saved Autonomous Dev Loop Custom GPT
 
 Before this file was created, the saved Custom GPT successfully called the Production `getRepositoryState` operation for `JOHNNYMACONNY/universal-agent-loop` and received the expected private repository metadata with default branch `main`.
 
-The canary branch was then created through the Production `createWorkingBranch` operation from the current `main` commit `e558a3f04f61907bb60e7176bcdc98204a6a0da6`.
+The canary branch was created through Production `createWorkingBranch` from `main` commit `e558a3f04f61907bb60e7176bcdc98204a6a0da6`.
+
+Production `writeRepositoryFile` then created this file in commit `6f6644631bee95957c382577c7cb766425f28c61`. This update is a second guarded write using the returned content blob SHA, proving the create/update concurrency contract before PR publication.
 
 ## Completion criterion
 
