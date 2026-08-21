@@ -4,14 +4,46 @@ import test from 'node:test';
 
 import express from 'express';
 
+import { StaticPrincipalResolver } from '../src/auth/principal.js';
 import {
   createGptActionBridgeRouter,
   deriveGptActionBridgeBinding,
 } from '../src/bridge/gpt-action-bridge.js';
+import type { TargetRegistration } from '../src/contracts.js';
 import type { GameToolSurface } from '../src/mcp.js';
+import { MemoryRegistrationStore } from '../src/provenance/registration-store.js';
+import type { DeploymentVerifier } from '../src/provenance/types.js';
+import { MemorySessionStore } from '../src/sessions/session-store.js';
+import { createGameToolServices } from '../src/tools/index.js';
+import { FakeBrowserAdapter } from './helpers/fake-browser-adapter.js';
 
 const TOKEN = 'dedicated-bridge-secret-value';
 const SHA = 'a'.repeat(40);
+const REGISTRATION: TargetRegistration = {
+  target_registration_id: 'reg_bridge',
+  project_id: 'project-1',
+  repository: { owner: 'owner', name: 'repo' },
+  expected_commit_sha: SHA,
+  deployment_id: 'dpl_bridge',
+  deployment_url: 'https://game.example.com',
+  deployment_origin: 'https://game.example.com',
+  allowed_hosts: ['game.example.com'],
+  created_at: '2026-08-21T00:00:00.000Z',
+  expires_at: '2026-08-21T00:15:00.000Z',
+  provenance_source: 'provider_api',
+};
+
+const verifier: DeploymentVerifier = {
+  async verify(input) {
+    return {
+      deploymentId: input.deploymentId,
+      deploymentUrl: 'https://game.example.com',
+      projectId: input.projectId,
+      repository: { ...input.repository },
+      commitSha: input.expectedCommitSha,
+    };
+  },
+};
 
 async function withServer(
   options: Parameters<typeof createGptActionBridgeRouter>[0],
@@ -126,6 +158,54 @@ test('session start derives a short-lived exact deployment registration server-s
         viewport: { width: 1280, height: 720 },
       },
     }]);
+  });
+});
+
+test('stable bridge principal owns the real persisted game session across separate HTTP requests', async () => {
+  const registrations = new MemoryRegistrationStore();
+  await registrations.put(REGISTRATION);
+  const sessions = new MemorySessionStore();
+  const browser = new FakeBrowserAdapter();
+  const binding = deriveGptActionBridgeBinding(TOKEN);
+  const surface = createGameToolServices({
+    registrations,
+    sessions,
+    browser,
+    verifier,
+    principals: new StaticPrincipalResolver(binding),
+    resolveDns: async () => [{ address: '93.184.216.34', family: 4 }],
+    now: () => new Date('2026-08-21T00:01:00.000Z'),
+    sessionIdFactory: () => 'session_bridge',
+    limits: {
+      maxSessionLifetimeMs: 900_000,
+      maxIdleMs: 180_000,
+      maxActionsPerInput: 20,
+      maxActionsPerSession: 500,
+      maxSingleWaitMs: 10_000,
+      maxRelativePointerDelta: 2000,
+    },
+  });
+
+  await withServer({
+    token: TOKEN,
+    surface,
+    registerForCommit: async (expectedCommitSha) => {
+      assert.equal(expectedCommitSha, SHA);
+      return { target_registration_id: REGISTRATION.target_registration_id };
+    },
+  }, async (baseUrl) => {
+    const started = await post(baseUrl, '/session-start', { expected_commit_sha: SHA });
+    assert.equal(started.status, 200);
+    const startedBody = await started.json() as { session_id: string };
+    assert.equal(startedBody.session_id, 'session_bridge');
+    assert.equal((await sessions.get('session_bridge'))?.owner_binding, binding);
+
+    const observed = await post(baseUrl, '/observe', { session_id: startedBody.session_id });
+    assert.equal(observed.status, 200);
+    const observedBody = await observed.json() as { session_id: string; content_trust: string };
+    assert.equal(observedBody.session_id, 'session_bridge');
+    assert.equal(observedBody.content_trust, 'UNTRUSTED_TARGET_CONTENT');
+    assert.equal((await sessions.get('session_bridge'))?.owner_binding, binding);
   });
 });
 
