@@ -46,7 +46,7 @@ function queueFetch(responses, captures = []) {
   };
 }
 
-test('OpenAPI exposes the bounded GitHub control plane and marks mutations consequential', async () => {
+test('OpenAPI exposes the bounded GitHub control plane with autonomous implementation and consequential publication', async () => {
   const response = await handleActionRequest(request('/openapi.json', { authorization: undefined }), {
     env,
     fetchImpl: async () => { throw new Error('unexpected fetch'); },
@@ -62,8 +62,8 @@ test('OpenAPI exposes the bounded GitHub control plane and marks mutations conse
   assert.equal(paths['/github/branch'].post.operationId, 'createWorkingBranch');
   assert.equal(paths['/github/file'].put.operationId, 'writeRepositoryFile');
   assert.equal(paths['/github/draft-pull-request'].post.operationId, 'createDraftPullRequest');
-  assert.equal(paths['/github/branch'].post['x-openai-isConsequential'], true);
-  assert.equal(paths['/github/file'].put['x-openai-isConsequential'], true);
+  assert.equal(paths['/github/branch'].post['x-openai-isConsequential'], false);
+  assert.equal(paths['/github/file'].put['x-openai-isConsequential'], false);
   assert.equal(paths['/github/draft-pull-request'].post['x-openai-isConsequential'], true);
   for (const operation of [
     paths['/github/repository'].get,
