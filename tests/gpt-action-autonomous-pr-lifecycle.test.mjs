@@ -108,6 +108,27 @@ test('PR creation publishes a normal PR from chatgpt branch to repository defaul
   assert.equal(response.body.draft, false);
 });
 
+test('legacy draft PR rejects a non-default base before GitHub mutation', async () => {
+  const captures = [];
+  const response = await handleActionRequest(request('/github/draft-pull-request', {
+    method: 'POST',
+    body: {
+      repository: 'JOHNNYMACONNY/universal-agent-loop',
+      head: 'chatgpt/feature',
+      base: 'release',
+      title: 'Legacy draft',
+      body: 'Compatibility path',
+    },
+  }), {
+    env,
+    fetchImpl: queueFetch([jsonResponse(repositoryPayload())], captures),
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal(response.body.error, 'INVALID_PULL_REQUEST_REFS');
+  assert.equal(captures.length, 1, 'must reject wrong-base draft PRs before calling GitHub pull creation');
+});
+
 test('merge requires the exact reviewed PR head and merges that head autonomously', async () => {
   const captures = [];
   const fetchImpl = queueFetch([
