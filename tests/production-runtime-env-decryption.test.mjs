@@ -14,13 +14,18 @@ test('Production reconciliation resolves actual environment values by variable I
   );
   assert.match(
     productionValueBlock,
+    /env_type=\$\(jq -r '\.type \/\/ empty'/,
+    'the helper must distinguish plain values from encrypted secret material',
+  );
+  assert.match(
+    productionValueBlock,
     /decrypted=\$\(jq -r '\.decrypted \/\/ false'/,
     'the helper must inspect Vercel’s decryption confirmation',
   );
   assert.match(
     productionValueBlock,
-    /if \[ "\$decrypted" != 'true' \]; then[\s\S]*?exit 1[\s\S]*?fi[\s\S]*?jq -r 'if \(\.value \| type\) == "string" then \.value else "" end'/,
-    'unconfirmed decryption must exit before the provider value can be consumed',
+    /if \[ "\$env_type" != 'plain' \] && \[ "\$decrypted" != 'true' \]; then[\s\S]*?exit 1[\s\S]*?fi[\s\S]*?jq -r 'if \(\.value \| type\) == "string" then \.value else "" end'/,
+    'non-plain values must fail closed unless decrypted, while provider-confirmed plain values remain readable',
   );
   assert.doesNotMatch(
     workflow,
