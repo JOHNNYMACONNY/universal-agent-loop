@@ -403,6 +403,8 @@ jobs:
           meta_sha=$(jq -r '.meta.githubCommitSha // .gitSource.sha // empty' /tmp/action-deployment.json)
           meta_ref=$(jq -r '.meta.githubCommitRef // empty' /tmp/action-deployment.json)
           deployment_source=$(jq -r '.source // empty' /tmp/action-deployment.json)
+          meta_org=$(jq -r '.meta.githubCommitOrg // .meta.githubOrg // empty' /tmp/action-deployment.json)
+          meta_repo=$(jq -r '.meta.githubCommitRepo // .meta.githubRepo // empty' /tmp/action-deployment.json)
           [[ "$deployment_id" =~ ^dpl_ ]] || { echo "::error::Action deployment ID missing"; exit 1; }
           [ "$project_id" = "$ACTION_PROJECT_ID" ] || { echo "::error::Action Production project mismatch"; exit 1; }
           [ "$target" = 'production' ] || { echo "::error::Action deployment target is not production"; exit 1; }
@@ -416,6 +418,7 @@ jobs:
             echo "::error::Action Production Git provenance is not canonical main"
             exit 1
           fi
+          [ "$meta_org" = "$TARGET_REPOSITORY_OWNER" ] && [ "$meta_repo" = "$TARGET_REPOSITORY_NAME" ] || { echo "::error::Action Production repository provenance mismatch"; exit 1; }
 
           echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
           echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
