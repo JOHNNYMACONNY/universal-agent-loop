@@ -8,6 +8,10 @@ on:
 permissions:
   statuses: write
 
+concurrency:
+  group: production-runtime-reconcile-status-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
 jobs:
   publish-status:
     if: ${{ github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_sha != '' }}
@@ -30,6 +34,33 @@ jobs:
               : state === 'success'
                 ? 'Production reconciliation passed'
                 : 'Production reconciliation failed';
+
+            const statuses = await github.paginate(github.rest.repos.listCommitStatusesForRef, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: run.head_sha,
+              per_page: 100,
+            });
+            for (const status of statuses.filter((entry) => entry.context === 'production-runtime-reconcile')) {
+              const match = String(status.target_url ?? '').match(/\/actions\/runs\/(\d+)$/);
+              if (!match) {
+                core.setFailed('Existing Production reconcile status has an unrecognized target URL');
+                return;
+              }
+              const existingRunId = Number(match[1]);
+              if (!Number.isSafeInteger(existingRunId)) {
+                core.setFailed('Existing Production reconcile status has an invalid run ID');
+                return;
+              }
+              if (existingRunId > run.id) {
+                core.info(`Skipping stale status event for run ${run.id}; newer run ${existingRunId} already owns this SHA`);
+                return;
+              }
+              if (existingRunId === run.id && state === 'pending' && status.state !== 'pending') {
+                core.info(`Skipping delayed pending event for terminal run ${run.id}`);
+                return;
+              }
+            }
 
             await github.rest.repos.createCommitStatus({
               owner: context.repo.owner,
