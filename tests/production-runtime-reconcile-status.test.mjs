@@ -11,7 +11,9 @@ test('production reconcile status observer publishes a discoverable exact-run li
   assert.match(reconcileWorkflow, /^name:\s*production-runtime-reconcile\s*$/m, 'observer must bind to the canonical Production reconciler name');
   assert.match(statusWorkflow, /workflow_run:[\s\S]*workflows:\s*\['production-runtime-reconcile'\]/, 'observer must watch only the canonical reconciler');
   assert.match(statusWorkflow, /types:\s*\[in_progress,\s*completed\]/, 'observer must publish both pending and terminal lifecycle transitions');
-  assert.match(statusWorkflow, /permissions:[\s\S]*statuses:\s*write\b/, 'observer must have bounded permission to publish commit statuses');
+  assert.match(statusWorkflow, /permissions:\s*\n\s+statuses:\s*write\b/, 'observer token must be limited to commit-status publication');
+  assert.match(statusWorkflow, /workflow_run\.head_branch == 'main'/, 'observer must fail closed for a non-main workflow run');
+  assert.match(statusWorkflow, /run\.head_branch !== 'main'/, 'runtime script must independently reject non-main runs before publication');
   assert.match(statusWorkflow, /context:\s*['"]production-runtime-reconcile['"]/, 'status context must be stable and machine-discoverable');
   for (const state of ['pending', 'success', 'failure']) {
     assert.match(statusWorkflow, new RegExp(`['"]${state}['"]`), `observer must map runs to ${state}`);
