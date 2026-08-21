@@ -114,12 +114,27 @@ test('skill degrades honestly when local execution capabilities are absent', asy
   assert.match(markdown, /BLOCKED|external blocker|missing required capability/i);
 });
 
-test('generic implementation authority never implies publication or high-impact authority', async () => {
+test('autonomous PR lifecycle requires fresh two-axis review PASS before merge', async () => {
+  const markdown = await loadSkill();
+
+  assert.match(markdown, /(?:create|open|reuse).*PR/i);
+  assert.match(markdown, /code-review/i);
+  assert.match(markdown, /Standards/i);
+  assert.match(markdown, /Spec/i);
+  assert.match(markdown, /(?:material finding|review fail|finding).*REPAIR/i);
+  assert.match(markdown, /fresh.*review|re-review/i);
+  assert.match(markdown, /exact.*(?:head|SHA)|head SHA/i);
+  assert.match(markdown, /(?:automatically|autonomously).*merge|merge.*(?:automatically|autonomously)/i);
+  assert.match(markdown, /(?:review PASS|both axes.*PASS|Standards.*PASS.*Spec.*PASS)/i);
+  assert.match(markdown, /(?:new commit|head changes?)[^\n]*(?:stale|invalidates).*review/i);
+});
+
+test('PR creation and reviewed merge are loop authority while high-impact publication stays gated', async () => {
   const markdown = await loadSkill();
 
   assert.match(markdown, /working branch|non-default branch/i);
-  assert.match(markdown, /(?:do not|must not).*(?:open|create|update).*PR.*(?:explicit|authority|authorization)/i);
-  assert.match(markdown, /(?:do not|must not).*merge.*(?:explicit|authority|authorization)/i);
+  assert.match(markdown, /PR (?:creation|creation\/update|open|update)[^\n]*(?:part of|included in|does not require).*autonomous/i);
+  assert.match(markdown, /merge[^\n]*(?:after|only after)[^\n]*review/i);
   assert.match(markdown, /(?:do not|must not).*deploy.*(?:explicit|authority|authorization)/i);
   assert.match(markdown, /secret|credential/i);
   assert.match(markdown, /destructive|production mutation/i);
