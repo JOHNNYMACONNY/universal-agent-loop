@@ -20,7 +20,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
   VERCEL_TEAM_ID: team_3LfEMNVsAEbXKLoCrnzXQzrF
   VERCEL_TEAM_SLUG: johnny-maconnys-projects
   BROWSER_PROJECT_ID: prj_bU062HqgwiUYUtMuX4nRN0GpXRd9
@@ -36,6 +35,8 @@ jobs:
   reconcile-production:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -274,7 +275,6 @@ jobs:
           list_url="$api/v6/deployments?projectId=$BROWSER_PROJECT_ID&target=production&limit=20&teamId=$VERCEL_TEAM_ID"
           curl -sS -H "$auth" "$list_url" -o /tmp/browser-deployments.json
           current=$(jq -c '[.deployments[] | select(.target == "production")] | first // null' /tmp/browser-deployments.json)
-          current_id=$(jq -r '.id // empty' <<<"$current")
           current_url=$(jq -r '.url // empty' <<<"$current")
           current_state=$(jq -r '.state // .readyState // empty' <<<"$current")
           current_sha=$(jq -r '.meta.githubCommitSha // .gitSource.sha // empty' <<<"$current")
