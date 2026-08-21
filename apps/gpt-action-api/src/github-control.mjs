@@ -220,7 +220,7 @@ async function getRepositoryTree(request, env, fetchImpl) {
     ref = repository.payload.default_branch;
   }
   const response = await githubJson(
-    `${API}/repos/${prepared.repositoryInfo.owner}/${prepared.repositoryInfo.repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
+    `${API}/repos/${prepared.repositoryInfo.owner}/${prepared.repositoryInfo.repo}/git/trees/${encodePath(ref)}?recursive=1`,
     { token: prepared.config.token, fetchImpl },
   );
   if (response.error) return response.error;
@@ -321,7 +321,7 @@ async function createWorkingBranch(request, env, fetchImpl) {
   if (body.branch === repository.payload.default_branch) return result(400, { error: 'INVALID_WORKING_BRANCH' });
   const fromRef = body.fromRef ?? repository.payload.default_branch;
   const source = await githubJson(
-    `${API}/repos/${prepared.repositoryInfo.owner}/${prepared.repositoryInfo.repo}/git/ref/heads/${encodeURIComponent(fromRef)}`,
+    `${API}/repos/${prepared.repositoryInfo.owner}/${prepared.repositoryInfo.repo}/git/ref/heads/${encodePath(fromRef)}`,
     context,
   );
   if (source.error) return source.error;
