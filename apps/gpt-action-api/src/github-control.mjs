@@ -61,6 +61,10 @@ function validPath(value) {
   return segments.every((segment) => segment && segment !== '.' && segment !== '..');
 }
 
+function validCommitSha(value) {
+  return typeof value === 'string' && /^[A-Fa-f0-9]{6,64}$/.test(value);
+}
+
 function encodePath(path) {
   return path.split('/').map(encodeURIComponent).join('/');
 }
@@ -100,7 +104,7 @@ function boundedText(value, max, { allowEmpty = false } = {}) {
 function upstreamError(status) {
   if (status === 401 || status === 403) return result(403, { error: 'GITHUB_CONTROL_FORBIDDEN', status });
   if (status === 404) return result(404, { error: 'GITHUB_CONTROL_NOT_FOUND', status });
-  if (status === 409) return result(409, { error: 'GITHUB_CONTROL_CONFLICT', status });
+  if (status === 405 || status === 409) return result(409, { error: 'GITHUB_CONTROL_CONFLICT', status });
   if (status === 422) return result(422, { error: 'GITHUB_CONTROL_VALIDATION_ERROR', status });
   return result(502, { error: 'GITHUB_CONTROL_UPSTREAM_ERROR', status });
 }
@@ -144,6 +148,30 @@ function repositoryProjection(repository, payload) {
     permissions: payload.permissions,
     url: payload.html_url,
   };
+}
+
+function pullProjection(repository, payload) {
+  return {
+    repository,
+    number: payload.number,
+    state: payload.state,
+    draft: Boolean(payload.draft),
+    merged: Boolean(payload.merged),
+    mergeable: payload.mergeable,
+    mergeableState: payload.mergeable_state,
+    title: payload.title,
+    body: payload.body ?? '',
+    head: { ref: payload.head?.ref, sha: payload.head?.sha },
+    base: { ref: payload.base?.ref, sha: payload.base?.sha },
+    url: payload.html_url,
+  };
+}
+
+function chooseMergeMethod(repository) {
+  if (repository.allow_squash_merge) return 'squash';
+  if (repository.allow_merge_commit) return 'merge';
+  if (repository.allow_rebase_merge) return 'rebase';
+  return null;
 }
 
 async function fetchRepository(repositoryInfo, context) {
@@ -258,21 +286,7 @@ async function getPullRequestState(request, env, fetchImpl) {
     { token: prepared.config.token, fetchImpl },
   );
   if (response.error) return response.error;
-  const payload = response.payload;
-  return result(200, {
-    repository: prepared.repositoryInfo.repository,
-    number: payload.number,
-    state: payload.state,
-    draft: Boolean(payload.draft),
-    merged: Boolean(payload.merged),
-    mergeable: payload.mergeable,
-    mergeableState: payload.mergeable_state,
-    title: payload.title,
-    body: payload.body ?? '',
-    head: { ref: payload.head?.ref, sha: payload.head?.sha },
-    base: { ref: payload.base?.ref, sha: payload.base?.sha },
-    url: payload.html_url,
-  });
+  return result(200, pullProjection(prepared.repositoryInfo.repository, response.payload));
 }
 
 async function getWorkflowRuns(request, env, fetchImpl) {
@@ -281,9 +295,7 @@ async function getWorkflowRuns(request, env, fetchImpl) {
   const branch = queryValue(request, 'branch');
   const headSha = queryValue(request, 'headSha');
   if (branch !== undefined && !validRef(branch)) return result(400, { error: 'INVALID_REF' });
-  if (headSha !== undefined && (typeof headSha !== 'string' || !/^[A-Fa-f0-9]{6,64}$/.test(headSha))) {
-    return result(400, { error: 'INVALID_HEAD_SHA' });
-  }
+  if (headSha !== undefined && !validCommitSha(headSha)) return result(400, { error: 'INVALID_HEAD_SHA' });
   const query = new URLSearchParams({ per_page: '20' });
   if (branch !== undefined) query.set('branch', branch);
   if (headSha !== undefined) query.set('head_sha', headSha);
@@ -382,7 +394,7 @@ async function writeRepositoryFile(request, env, fetchImpl) {
   });
 }
 
-async function createDraftPullRequest(request, env, fetchImpl) {
+async function createPullRequest(request, env, fetchImpl) {
   const parsed = parseBody(request.body);
   if (parsed.error) return parsed.error;
   const body = parsed.value;
@@ -398,20 +410,69 @@ async function createDraftPullRequest(request, env, fetchImpl) {
   const repository = await fetchRepository(prepared.repositoryInfo, context);
   if (repository.error) return repository.error;
   const base = body.base ?? repository.payload.default_branch;
-  if (body.head === base) return result(400, { error: 'INVALID_PULL_REQUEST_REFS' });
+  if (base !== repository.payload.default_branch || body.head === base) {
+    return result(400, { error: 'INVALID_PULL_REQUEST_REFS' });
+  }
   const created = await githubJson(
     `${API}/repos/${prepared.repositoryInfo.owner}/${prepared.repositoryInfo.repo}/pulls`,
-    { ...context, method: 'POST', body: { title, body: pullBody, head: body.head, base, draft: true }, expected: [201] },
+    { ...context, method: 'POST', body: { title, body: pullBody, head: body.head, base, draft: false }, expected: [201] },
   );
   if (created.error) return created.error;
-  return result(201, {
+  return result(201, pullProjection(prepared.repositoryInfo.repository, created.payload));
+}
+
+async function mergePullRequest(request, env, fetchImpl) {
+  const parsed = parseBody(request.body);
+  if (parsed.error) return parsed.error;
+  const body = parsed.value;
+  const number = parsePositiveInteger(body.number);
+  if (!number) return result(400, { error: 'INVALID_PULL_REQUEST_NUMBER' });
+  if (!validCommitSha(body.reviewedHeadSha)) return result(400, { error: 'INVALID_REVIEWED_HEAD_SHA' });
+
+  const prepared = prepareBodyRepository(body, env);
+  if (prepared.error) return prepared.error;
+  const context = { token: prepared.config.token, fetchImpl };
+  const repository = await fetchRepository(prepared.repositoryInfo, context);
+  if (repository.error) return repository.error;
+  const pull = await githubJson(
+    `${API}/repos/${prepared.repositoryInfo.owner}/${prepared.repositoryInfo.repo}/pulls/${number}`,
+    context,
+  );
+  if (pull.error) return pull.error;
+
+  const payload = pull.payload;
+  if (payload?.head?.sha !== body.reviewedHeadSha) return result(409, { error: 'STALE_REVIEW_HEAD' });
+  if (
+    payload?.state !== 'open'
+    || Boolean(payload?.draft)
+    || Boolean(payload?.merged)
+    || !validWorkingBranch(payload?.head?.ref)
+    || payload?.base?.ref !== repository.payload.default_branch
+  ) {
+    return result(409, { error: 'PULL_REQUEST_NOT_READY' });
+  }
+
+  const mergeMethod = chooseMergeMethod(repository.payload);
+  if (!mergeMethod) return result(409, { error: 'MERGE_METHOD_UNAVAILABLE' });
+  const merged = await githubJson(
+    `${API}/repos/${prepared.repositoryInfo.owner}/${prepared.repositoryInfo.repo}/pulls/${number}/merge`,
+    {
+      ...context,
+      method: 'PUT',
+      body: { sha: body.reviewedHeadSha, merge_method: mergeMethod },
+      expected: [200],
+    },
+  );
+  if (merged.error) return merged.error;
+  if (!merged.payload?.merged || typeof merged.payload?.sha !== 'string') return result(409, { error: 'MERGE_REJECTED' });
+
+  return result(200, {
     repository: prepared.repositoryInfo.repository,
-    number: created.payload?.number,
-    state: created.payload?.state,
-    draft: Boolean(created.payload?.draft),
-    head: { ref: created.payload?.head?.ref, sha: created.payload?.head?.sha },
-    base: { ref: created.payload?.base?.ref, sha: created.payload?.base?.sha },
-    url: created.payload?.html_url,
+    number,
+    reviewedHeadSha: body.reviewedHeadSha,
+    mergeMethod,
+    merged: true,
+    mergeSha: merged.payload.sha,
   });
 }
 
@@ -433,17 +494,18 @@ export async function handleGithubControlRequest(request, { env, fetchImpl }) {
       if (method !== 'GET') return methodNotAllowed('GET');
       return getRepositoryTree(request, env, fetchImpl);
     case '/github/pull-request':
-      if (method !== 'GET') return methodNotAllowed('GET');
-      return getPullRequestState(request, env, fetchImpl);
+      if (method === 'GET') return getPullRequestState(request, env, fetchImpl);
+      if (method === 'POST') return createPullRequest(request, env, fetchImpl);
+      return methodNotAllowed('GET, POST');
     case '/github/workflow-runs':
       if (method !== 'GET') return methodNotAllowed('GET');
       return getWorkflowRuns(request, env, fetchImpl);
     case '/github/branch':
       if (method !== 'POST') return methodNotAllowed('POST');
       return createWorkingBranch(request, env, fetchImpl);
-    case '/github/draft-pull-request':
+    case '/github/merge-pull-request':
       if (method !== 'POST') return methodNotAllowed('POST');
-      return createDraftPullRequest(request, env, fetchImpl);
+      return mergePullRequest(request, env, fetchImpl);
     default:
       return result(404, { error: 'NOT_FOUND' });
   }
