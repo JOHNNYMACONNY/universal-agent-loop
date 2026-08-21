@@ -1,0 +1,250 @@
+const MAX_REQUEST_BYTES = 64 * 1024;
+const MAX_UPSTREAM_BYTES = 4 * 1024 * 1024;
+const MAX_ERROR_MESSAGE = 1024;
+
+const ROUTES = new Map([
+  ['/game-browser/session-start', '/internal/gpt-action/session-start'],
+  ['/game-browser/observe', '/internal/gpt-action/observe'],
+  ['/game-browser/input', '/internal/gpt-action/input'],
+  ['/game-browser/read-state', '/internal/gpt-action/read-state'],
+  ['/game-browser/reset', '/internal/gpt-action/reset'],
+  ['/game-browser/session-end', '/internal/gpt-action/session-end'],
+]);
+
+function result(status, body, headers = {}) {
+  return {
+    status,
+    body,
+    headers: {
+      'cache-control': 'no-store',
+      'content-type': 'application/json; charset=utf-8',
+      ...headers,
+    },
+  };
+}
+
+function configuration(env) {
+  const token = env.GAME_BROWSER_BRIDGE_TOKEN?.trim();
+  const rawBaseUrl = env.GAME_BROWSER_RUNTIME_BASE_URL?.trim();
+  if (!token || !rawBaseUrl) return null;
+  try {
+    const parsed = new URL(rawBaseUrl);
+    if (
+      parsed.protocol !== 'https:'
+      || parsed.username
+      || parsed.password
+      || parsed.pathname !== '/'
+      || parsed.search
+      || parsed.hash
+    ) return null;
+    return { token, origin: parsed.origin };
+  } catch {
+    return null;
+  }
+}
+
+function parseBody(body) {
+  if (body && typeof body === 'object' && !Array.isArray(body) && !Buffer.isBuffer(body)) {
+    try {
+      const encoded = JSON.stringify(body);
+      if (Buffer.byteLength(encoded, 'utf8') > MAX_REQUEST_BYTES) return { error: result(413, { error: 'GAME_BROWSER_REQUEST_TOO_LARGE' }) };
+      return { value: body, encoded };
+    } catch {
+      return { error: result(400, { error: 'INVALID_JSON_BODY' }) };
+    }
+  }
+
+  let text;
+  if (typeof body === 'string') text = body;
+  else if (Buffer.isBuffer(body)) text = body.toString('utf8');
+  else return { error: result(400, { error: 'INVALID_JSON_BODY' }) };
+  if (Buffer.byteLength(text, 'utf8') > MAX_REQUEST_BYTES) return { error: result(413, { error: 'GAME_BROWSER_REQUEST_TOO_LARGE' }) };
+
+  try {
+    const value = JSON.parse(text);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('not object');
+    return { value, encoded: JSON.stringify(value) };
+  } catch {
+    return { error: result(400, { error: 'INVALID_JSON_BODY' }) };
+  }
+}
+
+function screenshotDescriptor(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const base64 = typeof value.base64 === 'string' ? value.base64 : undefined;
+  let bytes;
+  if (base64 !== undefined) {
+    try { bytes = Buffer.from(base64, 'base64').byteLength; } catch { bytes = 0; }
+  }
+  return {
+    available: true,
+    transported: false,
+    reason: 'ACTION_IMAGE_TRANSPORT_NOT_IMPLEMENTED',
+    ...(bytes === undefined ? {} : { bytes }),
+  };
+}
+
+function projectEvidence(value) {
+  if (Array.isArray(value)) return value.map(projectEvidence);
+  if (!value || typeof value !== 'object') return value;
+  const projected = {};
+  for (const [key, child] of Object.entries(value)) {
+    projected[key] = key === 'screenshot' ? screenshotDescriptor(child) : projectEvidence(child);
+  }
+  return projected;
+}
+
+function boundedRuntimeError(status, body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body) || typeof body.error !== 'string' || body.error.length > 128) return null;
+  const projected = { error: body.error };
+  if (typeof body.message === 'string' && body.message.length <= MAX_ERROR_MESSAGE) projected.message = body.message;
+  if (Number.isFinite(body.retryAfterMs) && body.retryAfterMs >= 0) projected.retryAfterMs = body.retryAfterMs;
+  return result(status, projected);
+}
+
+export async function handleGameBrowserControlRequest(request, { env = process.env, fetchImpl = globalThis.fetch } = {}) {
+  const method = String(request.method ?? 'POST').toUpperCase();
+  const path = String(request.path ?? '/');
+  const upstreamPath = ROUTES.get(path);
+  if (!upstreamPath) return result(404, { error: 'NOT_FOUND' });
+  if (method !== 'POST') return result(405, { error: 'METHOD_NOT_ALLOWED' }, { allow: 'POST' });
+
+  const config = configuration(env);
+  if (!config) return result(503, { error: 'GAME_BROWSER_CONFIGURATION_ERROR' });
+
+  const parsed = parseBody(request.body);
+  if (parsed.error) return parsed.error;
+
+  let upstream;
+  try {
+    upstream = await fetchImpl(`${config.origin}${upstreamPath}`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${config.token}`,
+        'content-type': 'application/json',
+        'user-agent': 'ual-gpt-action-api',
+      },
+      body: parsed.encoded,
+    });
+  } catch {
+    return result(502, { error: 'GAME_BROWSER_UPSTREAM_ERROR', status: 0 });
+  }
+
+  let text;
+  try { text = await upstream.text(); }
+  catch { return result(502, { error: 'GAME_BROWSER_UPSTREAM_ERROR', status: upstream.status }); }
+  if (Buffer.byteLength(text, 'utf8') > MAX_UPSTREAM_BYTES) return result(502, { error: 'GAME_BROWSER_UPSTREAM_TOO_LARGE', status: upstream.status });
+
+  let payload;
+  try { payload = JSON.parse(text); }
+  catch { return result(502, { error: 'GAME_BROWSER_UPSTREAM_ERROR', status: upstream.status }); }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return result(502, { error: 'GAME_BROWSER_UPSTREAM_ERROR', status: upstream.status });
+
+  if (!upstream.ok) {
+    if (upstream.status === 401 || upstream.status >= 500 && upstream.status !== 503) {
+      return result(502, { error: 'GAME_BROWSER_UPSTREAM_ERROR', status: upstream.status });
+    }
+    return boundedRuntimeError(upstream.status, payload)
+      ?? result(502, { error: 'GAME_BROWSER_UPSTREAM_ERROR', status: upstream.status });
+  }
+
+  return result(upstream.status, projectEvidence(payload));
+}
+
+function actionOperation(operationId, summary, schemaRef, security) {
+  return {
+    post: {
+      operationId,
+      summary,
+      security,
+      'x-openai-isConsequential': false,
+      requestBody: {
+        required: true,
+        content: { 'application/json': { schema: { $ref: schemaRef } } },
+      },
+      responses: {
+        '200': { description: 'Bounded game-browser runtime result.', content: { 'application/json': { schema: { $ref: '#/components/schemas/GameQaResult' } } } },
+        '400': { description: 'Invalid bounded game-QA input.' },
+        '401': { description: 'Missing or invalid Action bearer key.' },
+        '404': { description: 'Game-browser session/resource not found.' },
+        '409': { description: 'Stale deployment or session/action sequencing conflict.' },
+        '413': { description: 'Action request exceeds the bridge size limit.' },
+        '422': { description: 'Bounded game-QA validation failure.' },
+        '429': { description: 'Game-browser runtime rate or action limit reached.' },
+        '502': { description: 'Game-browser runtime is unavailable or returned an invalid response.' },
+        '503': { description: 'Game-browser bridge/runtime configuration is incomplete.' },
+      },
+    },
+  };
+}
+
+export function gameBrowserOpenApiPaths(security) {
+  return {
+    '/game-browser/session-start': actionOperation('startGameQaSession', 'Start bounded QA against the exact configured-project deployment for a Git commit.', '#/components/schemas/GameQaSessionStartRequest', security),
+    '/game-browser/observe': actionOperation('observeGameQaSession', 'Observe the existing bounded remote game-QA session.', '#/components/schemas/GameQaObserveRequest', security),
+    '/game-browser/input': actionOperation('sendGameQaInput', 'Send a bounded idempotent gameplay input batch to the existing session.', '#/components/schemas/GameQaInputRequest', security),
+    '/game-browser/read-state': actionOperation('readGameQaState', 'Read bounded JSON-compatible game instrumentation state.', '#/components/schemas/GameQaReadStateRequest', security),
+    '/game-browser/reset': actionOperation('resetGameQaSession', 'Reset only the registered game target for the existing session.', '#/components/schemas/GameQaResetRequest', security),
+    '/game-browser/session-end': actionOperation('endGameQaSession', 'Release input and end the isolated remote game-QA session.', '#/components/schemas/GameQaSessionRequest', security),
+  };
+}
+
+const sessionId = { type: 'string', minLength: 1, maxLength: 128 };
+const commitSha = { type: 'string', pattern: '^[0-9A-Fa-f]{40}$' };
+const nonnegativeInteger = { type: 'integer', minimum: 0 };
+
+const actionVariants = [
+  { type: 'object', required: ['type', 'key'], properties: { type: { const: 'key_down' }, key: { type: 'string', maxLength: 32 } }, additionalProperties: false },
+  { type: 'object', required: ['type', 'key'], properties: { type: { const: 'key_up' }, key: { type: 'string', maxLength: 32 } }, additionalProperties: false },
+  { type: 'object', required: ['type', 'key'], properties: { type: { const: 'press' }, key: { type: 'string', maxLength: 32 }, duration_ms: { type: 'integer', minimum: 0, maximum: 10000 } }, additionalProperties: false },
+  { type: 'object', required: ['type', 'x', 'y'], properties: { type: { const: 'pointer_move' }, x: { type: 'number' }, y: { type: 'number' } }, additionalProperties: false },
+  { type: 'object', required: ['type', 'delta_x', 'delta_y'], properties: { type: { const: 'pointer_move_relative' }, delta_x: { type: 'number' }, delta_y: { type: 'number' } }, additionalProperties: false },
+  { type: 'object', required: ['type'], properties: { type: { const: 'pointer_down' }, button: { enum: ['left', 'middle', 'right'] } }, additionalProperties: false },
+  { type: 'object', required: ['type'], properties: { type: { const: 'pointer_up' }, button: { enum: ['left', 'middle', 'right'] } }, additionalProperties: false },
+  { type: 'object', required: ['type', 'x', 'y'], properties: { type: { const: 'click' }, x: { type: 'number' }, y: { type: 'number' }, button: { enum: ['left', 'middle', 'right'] } }, additionalProperties: false },
+  { type: 'object', required: ['type', 'delta_y'], properties: { type: { const: 'scroll' }, delta_x: { type: 'number' }, delta_y: { type: 'number' } }, additionalProperties: false },
+  { type: 'object', required: ['type', 'duration_ms'], properties: { type: { const: 'wait' }, duration_ms: { type: 'integer', minimum: 0, maximum: 10000 } }, additionalProperties: false },
+];
+
+export const gameBrowserOpenApiSchemas = {
+  GameQaSessionStartRequest: {
+    type: 'object',
+    required: ['expected_commit_sha'],
+    properties: {
+      expected_commit_sha: commitSha,
+      viewport: {
+        type: 'object',
+        required: ['width', 'height'],
+        properties: { width: { type: 'integer', minimum: 1, maximum: 4096 }, height: { type: 'integer', minimum: 1, maximum: 4096 } },
+        additionalProperties: false,
+      },
+    },
+    additionalProperties: false,
+  },
+  GameQaSessionRequest: {
+    type: 'object', required: ['session_id'], properties: { session_id: sessionId }, additionalProperties: false,
+  },
+  GameQaObserveRequest: {
+    type: 'object', required: ['session_id'], properties: { session_id: sessionId, expected_observation_seq: nonnegativeInteger }, additionalProperties: false,
+  },
+  GameQaInputRequest: {
+    type: 'object',
+    required: ['session_id', 'action_batch_id', 'expected_action_seq', 'actions'],
+    properties: {
+      session_id: sessionId,
+      action_batch_id: { type: 'string', minLength: 1, maxLength: 128 },
+      expected_action_seq: nonnegativeInteger,
+      actions: { type: 'array', minItems: 1, maxItems: 20, items: { oneOf: actionVariants } },
+    },
+    additionalProperties: false,
+  },
+  GameQaReadStateRequest: {
+    type: 'object', required: ['session_id'], properties: { session_id: sessionId, path: { type: 'string', maxLength: 512 } }, additionalProperties: false,
+  },
+  GameQaResetRequest: {
+    type: 'object', required: ['session_id'], properties: { session_id: sessionId, mode: { enum: ['reload', 'target'] } }, additionalProperties: false,
+  },
+  GameQaResult: { type: 'object', additionalProperties: true },
+};
