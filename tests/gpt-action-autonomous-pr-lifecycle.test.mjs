@@ -10,6 +10,11 @@ const env = {
   GITHUB_CONTROL_OWNERS: 'JOHNNYMACONNY',
 };
 
+const HEAD_SHA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const OLD_HEAD_SHA = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const NEW_HEAD_SHA = 'cccccccccccccccccccccccccccccccccccccccc';
+const MERGE_SHA = 'dddddddddddddddddddddddddddddddddddddddd';
+
 function request(path, { method = 'GET', authorization = 'Bearer action-secret', searchParams = {}, body } = {}) {
   return {
     method,
@@ -59,7 +64,8 @@ test('OpenAPI exposes autonomous PR creation and reviewed merge without per-call
   assert.equal(paths['/github/pull-request'].post['x-openai-isConsequential'], false);
   assert.equal(paths['/github/merge-pull-request'].post.operationId, 'mergePullRequest');
   assert.equal(paths['/github/merge-pull-request'].post['x-openai-isConsequential'], false);
-  assert.equal(Object.hasOwn(paths, '/github/draft-pull-request'), false);
+  assert.equal(paths['/github/draft-pull-request'].post.operationId, 'createDraftPullRequest');
+  assert.equal(paths['/github/draft-pull-request'].post['x-openai-isConsequential'], true);
 });
 
 test('PR creation publishes a normal PR from chatgpt branch to repository default branch', async () => {
@@ -71,8 +77,8 @@ test('PR creation publishes a normal PR from chatgpt branch to repository defaul
       state: 'open',
       draft: false,
       html_url: 'https://github.com/JOHNNYMACONNY/universal-agent-loop/pull/21',
-      head: { ref: 'chatgpt/feature', sha: 'head-sha' },
-      base: { ref: 'main', sha: 'base-sha' },
+      head: { ref: 'chatgpt/feature', sha: HEAD_SHA },
+      base: { ref: 'main', sha: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' },
     }, 201),
   ], captures);
 
@@ -103,10 +109,10 @@ test('merge requires the exact reviewed PR head and merges that head autonomousl
       state: 'open',
       draft: false,
       merged: false,
-      head: { ref: 'chatgpt/feature', sha: 'head-sha' },
-      base: { ref: 'main', sha: 'base-sha' },
+      head: { ref: 'chatgpt/feature', sha: HEAD_SHA },
+      base: { ref: 'main', sha: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' },
     }),
-    jsonResponse({ sha: 'merge-sha', merged: true, message: 'Pull Request successfully merged' }),
+    jsonResponse({ sha: MERGE_SHA, merged: true, message: 'Pull Request successfully merged' }),
   ], captures);
 
   const response = await handleActionRequest(request('/github/merge-pull-request', {
@@ -114,21 +120,21 @@ test('merge requires the exact reviewed PR head and merges that head autonomousl
     body: {
       repository: 'JOHNNYMACONNY/universal-agent-loop',
       number: 21,
-      reviewedHeadSha: 'head-sha',
+      reviewedHeadSha: HEAD_SHA,
     },
   }), { env, fetchImpl });
 
   assert.equal(response.status, 200);
   assert.equal(captures[2].url, 'https://api.github.com/repos/JOHNNYMACONNY/universal-agent-loop/pulls/21/merge');
   assert.equal(captures[2].options.method, 'PUT');
-  assert.deepEqual(JSON.parse(captures[2].options.body), { sha: 'head-sha', merge_method: 'squash' });
+  assert.deepEqual(JSON.parse(captures[2].options.body), { sha: HEAD_SHA, merge_method: 'squash' });
   assert.deepEqual(response.body, {
     repository: 'JOHNNYMACONNY/universal-agent-loop',
     number: 21,
-    reviewedHeadSha: 'head-sha',
+    reviewedHeadSha: HEAD_SHA,
     mergeMethod: 'squash',
     merged: true,
-    mergeSha: 'merge-sha',
+    mergeSha: MERGE_SHA,
   });
 });
 
@@ -141,8 +147,8 @@ test('merge fails closed when the PR head moved after review', async () => {
       state: 'open',
       draft: false,
       merged: false,
-      head: { ref: 'chatgpt/feature', sha: 'new-head-sha' },
-      base: { ref: 'main', sha: 'base-sha' },
+      head: { ref: 'chatgpt/feature', sha: NEW_HEAD_SHA },
+      base: { ref: 'main', sha: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' },
     }),
   ], captures);
 
@@ -151,7 +157,7 @@ test('merge fails closed when the PR head moved after review', async () => {
     body: {
       repository: 'JOHNNYMACONNY/universal-agent-loop',
       number: 21,
-      reviewedHeadSha: 'old-head-sha',
+      reviewedHeadSha: OLD_HEAD_SHA,
     },
   }), { env, fetchImpl });
 
@@ -162,17 +168,17 @@ test('merge fails closed when the PR head moved after review', async () => {
 
 test('merge refuses draft, closed, non-chatgpt, or non-default-base pull requests', async () => {
   const variants = [
-    { state: 'open', draft: true, head: { ref: 'chatgpt/feature', sha: 'head-sha' }, base: { ref: 'main' } },
-    { state: 'closed', draft: false, head: { ref: 'chatgpt/feature', sha: 'head-sha' }, base: { ref: 'main' } },
-    { state: 'open', draft: false, head: { ref: 'feature', sha: 'head-sha' }, base: { ref: 'main' } },
-    { state: 'open', draft: false, head: { ref: 'chatgpt/feature', sha: 'head-sha' }, base: { ref: 'release' } },
+    { state: 'open', draft: true, head: { ref: 'chatgpt/feature', sha: HEAD_SHA }, base: { ref: 'main' } },
+    { state: 'closed', draft: false, head: { ref: 'chatgpt/feature', sha: HEAD_SHA }, base: { ref: 'main' } },
+    { state: 'open', draft: false, head: { ref: 'feature', sha: HEAD_SHA }, base: { ref: 'main' } },
+    { state: 'open', draft: false, head: { ref: 'chatgpt/feature', sha: HEAD_SHA }, base: { ref: 'release' } },
   ];
 
   for (const pull of variants) {
     const captures = [];
     const response = await handleActionRequest(request('/github/merge-pull-request', {
       method: 'POST',
-      body: { repository: 'JOHNNYMACONNY/universal-agent-loop', number: 21, reviewedHeadSha: 'head-sha' },
+      body: { repository: 'JOHNNYMACONNY/universal-agent-loop', number: 21, reviewedHeadSha: HEAD_SHA },
     }), {
       env,
       fetchImpl: queueFetch([jsonResponse(repositoryPayload()), jsonResponse({ number: 21, merged: false, ...pull })], captures),
