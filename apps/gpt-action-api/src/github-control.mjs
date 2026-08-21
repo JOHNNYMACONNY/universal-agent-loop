@@ -449,7 +449,9 @@ async function createDraftPullRequest(request, env, fetchImpl) {
   const repository = await fetchRepository(prepared.repositoryInfo, context);
   if (repository.error) return repository.error;
   const base = body.base ?? repository.payload.default_branch;
-  if (body.head === base) return result(400, { error: 'INVALID_PULL_REQUEST_REFS' });
+  if (base !== repository.payload.default_branch || body.head === base) {
+    return result(400, { error: 'INVALID_PULL_REQUEST_REFS' });
+  }
   const created = await githubJson(
     `${API}/repos/${prepared.repositoryInfo.owner}/${prepared.repositoryInfo.repo}/pulls`,
     { ...context, method: 'POST', body: { title, body: pullBody, head: body.head, base, draft: true }, expected: [201] },
