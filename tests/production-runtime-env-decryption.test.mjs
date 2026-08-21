@@ -4,17 +4,23 @@ import { readFile } from 'node:fs/promises';
 
 const workflowUrl = new URL('../.github/workflows/production-runtime-reconcile.yml', import.meta.url);
 const workflow = await readFile(workflowUrl, 'utf8');
+const productionValueBlock = workflow.match(/production_value\(\) \{[\s\S]*?\n          \}/)?.[0] ?? '';
 
 test('Production reconciliation resolves actual environment values by variable ID', () => {
   assert.match(
-    workflow,
+    productionValueBlock,
     /\/v1\/projects\/\$project_id\/env\/\$env_id\?teamId=\$VERCEL_TEAM_ID/,
     'Production values must be read through Vercel’s per-variable decrypted-value endpoint',
   );
   assert.match(
-    workflow,
+    productionValueBlock,
     /decrypted=\$\(jq -r '\.decrypted \/\/ false'/,
-    'decrypted-value reads must fail closed unless Vercel confirms decryption',
+    'the helper must inspect Vercel’s decryption confirmation',
+  );
+  assert.match(
+    productionValueBlock,
+    /if \[ "\$decrypted" != 'true' \]; then[\s\S]*?exit 1[\s\S]*?fi[\s\S]*?jq -r 'if \(\.value \| type\) == "string" then \.value else "" end'/,
+    'unconfirmed decryption must exit before the provider value can be consumed',
   );
   assert.doesNotMatch(
     workflow,
@@ -24,6 +30,11 @@ test('Production reconciliation resolves actual environment values by variable I
 });
 
 test('all reusable Production values are resolved in the owning project context', () => {
+  assert.ok(
+    workflow.includes('current=$(production_value "$project_id" "$file" "$key")'),
+    'upsert comparison must resolve the current value in the owning project context',
+  );
+
   for (const call of [
     'production_value "$BROWSER_PROJECT_ID" "$browser_env" GPT_ACTION_BRIDGE_TOKEN',
     'production_value "$ACTION_PROJECT_ID" "$action_env" GAME_BROWSER_BRIDGE_TOKEN',
