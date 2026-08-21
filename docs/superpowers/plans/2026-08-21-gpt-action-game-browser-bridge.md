@@ -20,7 +20,8 @@ Add root tests that define:
 - dedicated bridge-token forwarding;
 - bounded JSON proxying;
 - screenshot base64 stripping plus explicit missing-image transport metadata;
-- upstream body/secret non-disclosure.
+- upstream body/secret non-disclosure;
+- explicit untrusted-evidence/outer-authority descriptions on every browser Action operation.
 
 These tests should fail before implementation.
 
@@ -35,11 +36,13 @@ Add `apps/gpt-action-api/src/game-browser-control.mjs` with:
 - runtime error mapping;
 - recursive observation projection that removes screenshot base64 bytes.
 
-Update `apps/gpt-action-api/src/app.mjs` to:
+Keep the already-reviewed core `apps/gpt-action-api/src/app.mjs` unchanged. Add `apps/gpt-action-api/src/action-router.mjs` as the Production composition layer that:
 
-- route `/game-browser/*` only after existing Action authentication;
-- add OpenAPI paths and schemas;
-- preserve existing skill/GitHub operations unchanged.
+- reuses the core Action authentication boundary before any `/game-browser/*` call;
+- augments the public OpenAPI document with the six browser paths/schemas and target-content trust boundary;
+- delegates all existing skill/GitHub paths to the core unchanged.
+
+Update `apps/gpt-action-api/api/index.mjs` to use that composed router. This makes the deployed server entrypoint exercise the bridge while retaining direct unit coverage of the existing core implementation.
 
 ### 3. TDD: runtime private bridge
 
