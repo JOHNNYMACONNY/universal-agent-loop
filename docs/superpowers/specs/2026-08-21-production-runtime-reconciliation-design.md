@@ -31,7 +31,7 @@ Each run:
 5. replaces missing or unreadable legacy secret values once with encrypted project variables, then reuses them on future runs;
 6. upserts all required browser runtime configuration;
 7. ensures both projects share one stable bridge token;
-8. reuses a browser Sandbox snapshot while its input fingerprint remains current, otherwise creates a new pinned snapshot;
+8. reuses a live browser Sandbox snapshot while its input fingerprint remains current and its expiry is more than three days away, otherwise creates a new pinned snapshot;
 9. deploys exact canonical `main` to Production only when configuration changed, the current Production SHA differs, or health is not green;
 10. verifies exact deployment project/SHA/target/state metadata;
 11. verifies stable health/OpenAPI surfaces;
@@ -62,6 +62,7 @@ The snapshot is keyed by a deterministic fingerprint over:
 
 - pinned `AGENT_BROWSER_VERSION`;
 - `apps/game-browser-mcp/sandbox/worker.mjs` contents;
+- `apps/game-browser-mcp/sandbox/persistent-lock.mjs` contents;
 - `apps/game-browser-mcp/scripts/create-browser-snapshot.ts` contents.
 
 Production stores:
@@ -69,7 +70,7 @@ Production stores:
 - `AGENT_BROWSER_SNAPSHOT_ID`
 - `AGENT_BROWSER_SNAPSHOT_FINGERPRINT`
 
-If both are present and the fingerprint matches, the existing snapshot is reused. Otherwise the workflow mints a project-scoped Vercel OIDC token, builds a fresh pinned snapshot, and persists the new ID/fingerprint.
+A snapshot is reusable only if its ID and fingerprint match **and** Vercel's documented snapshot API confirms it still exists, is in `created` state, and expires more than three days in the future. Otherwise the workflow mints a project-scoped Vercel OIDC token, builds a fresh pinned snapshot, and persists the new ID/fingerprint. This prevents the 30-day snapshot lifetime from turning Production into a latent failure.
 
 ## Managed browser Production configuration
 
@@ -145,4 +146,4 @@ No billing change, repository settings mutation, release publication, secret dis
 
 ## Long-term operation
 
-The daily schedule detects environment drift even without a source change. Relevant `main` pushes reconcile immediately. Secret and snapshot reuse avoids unnecessary rotation and provider resource churn. A failed reconciliation leaves explicit workflow evidence and never silently downgrades verification requirements.
+The daily schedule detects environment drift even without a source change. Relevant `main` pushes reconcile immediately. Secret reuse plus snapshot validity/expiry checks avoid unnecessary rotation while ensuring expiring provider resources are refreshed before they break Production. A failed reconciliation leaves explicit workflow evidence and never silently downgrades verification requirements.
