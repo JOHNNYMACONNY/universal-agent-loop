@@ -121,7 +121,7 @@ jobs:
           }
 
           production_value() {
-            local project_id="$1" file="$2" key="$3" record env_id value_file status decrypted
+            local project_id="$1" file="$2" key="$3" record env_id value_file status env_type decrypted
             record=$(latest_record "$file" "$key")
             if [ "$record" = 'null' ]; then
               printf ''
@@ -140,10 +140,11 @@ jobs:
               echo "::error::Unable to resolve Production value for $key in $project_id (HTTP $status)" >&2
               exit 1
             fi
+            env_type=$(jq -r '.type // empty' "$value_file")
             decrypted=$(jq -r '.decrypted // false' "$value_file")
-            if [ "$decrypted" != 'true' ]; then
+            if [ "$env_type" != 'plain' ] && [ "$decrypted" != 'true' ]; then
               rm -f "$value_file"
-              echo "::error::Vercel did not confirm decrypted Production value for $key in $project_id" >&2
+              echo "::error::Vercel did not confirm decrypted non-plain Production value for $key in $project_id" >&2
               exit 1
             fi
             jq -r 'if (.value | type) == "string" then .value else "" end' "$value_file"
