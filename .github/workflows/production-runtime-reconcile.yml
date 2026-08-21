@@ -16,7 +16,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: production-runtime-reconcile
+  # Shared with the existing manual Action Production mutator so environment
+  # changes and stable-alias deployment updates cannot race each other.
+  group: gpt-action-api-production
   cancel-in-progress: false
 
 env:
@@ -330,6 +332,7 @@ jobs:
           echo "reused=$reused" >> "$GITHUB_OUTPUT"
 
       - name: Require browser stable Production health
+        id: browser_health
         shell: bash
         run: |
           set -euo pipefail
@@ -407,17 +410,25 @@ jobs:
           echo "deployment_url=$deployment_url" >> "$GITHUB_OUTPUT"
           echo "reused=$reused" >> "$GITHUB_OUTPUT"
 
-      - name: Verify stable Action Production contract
+      - name: Verify stable Action Production health
+        id: action_health
         shell: bash
         run: |
           set -euo pipefail
           for attempt in $(seq 1 30); do
             health=$(curl -sS -o /tmp/action-health.json -w '%{http_code}' "$ACTION_PRODUCTION_URL/health" || true)
-            if [ "$health" = '200' ] && [ "$(jq -r '.ok // false' /tmp/action-health.json 2>/dev/null || true)" = 'true' ]; then break; fi
+            if [ "$health" = '200' ] && [ "$(jq -r '.ok // false' /tmp/action-health.json 2>/dev/null || true)" = 'true' ]; then exit 0; fi
             sleep 2
           done
-          [ "$health" = '200' ] || { echo "::error::Action stable health failed"; exit 1; }
+          echo "::error::Action stable health failed (HTTP $health)"
+          cat /tmp/action-health.json 2>/dev/null || true
+          exit 1
 
+      - name: Verify Action Production OpenAPI contract
+        id: action_openapi
+        shell: bash
+        run: |
+          set -euo pipefail
           openapi=$(curl -sS -o /tmp/openapi.json -w '%{http_code}' "$ACTION_PRODUCTION_URL/openapi.json")
           [ "$openapi" = '200' ] || { echo "::error::Action OpenAPI failed"; exit 1; }
           for operation in \
@@ -450,6 +461,7 @@ jobs:
         run: node --import tsx scripts/issue-test-principal.ts
 
       - name: Run provider-backed Production Canvas gameplay acceptance
+        id: gameplay
         shell: bash
         working-directory: apps/game-browser-mcp
         env:
@@ -519,6 +531,11 @@ jobs:
           BROWSER_REUSED: ${{ steps.browser_deploy.outputs.reused }}
           ACTION_REUSED: ${{ steps.action_deploy.outputs.reused }}
           SNAPSHOT_FINGERPRINT: ${{ steps.config.outputs.snapshot_fingerprint }}
+          BROWSER_HEALTH_OUTCOME: ${{ steps.browser_health.outcome }}
+          ACTION_HEALTH_OUTCOME: ${{ steps.action_health.outcome }}
+          ACTION_OPENAPI_OUTCOME: ${{ steps.action_openapi.outcome }}
+          GAMEPLAY_OUTCOME: ${{ steps.gameplay.outcome }}
+          BRIDGE_OUTCOME: ${{ steps.bridge.outcome }}
         run: |
           jq -n \
             --arg candidateSha "$CANDIDATE_SHA" \
@@ -529,6 +546,11 @@ jobs:
             --arg snapshotFingerprint "$SNAPSHOT_FINGERPRINT" \
             --arg browserUrl "$BROWSER_PRODUCTION_URL" \
             --arg actionUrl "$ACTION_PRODUCTION_URL" \
+            --arg browserHealthOutcome "$BROWSER_HEALTH_OUTCOME" \
+            --arg actionHealthOutcome "$ACTION_HEALTH_OUTCOME" \
+            --arg actionOpenApiOutcome "$ACTION_OPENAPI_OUTCOME" \
+            --arg gameplayOutcome "$GAMEPLAY_OUTCOME" \
+            --arg bridgeOutcome "$BRIDGE_OUTCOME" \
             '{
               candidateSha:$candidateSha,
               browserDeploymentId:$browserDeploymentId,
@@ -538,6 +560,11 @@ jobs:
               snapshotFingerprint:$snapshotFingerprint,
               browserStableUrl:$browserUrl,
               actionStableUrl:$actionUrl,
+              browserHealthOutcome:$browserHealthOutcome,
+              actionHealthOutcome:$actionHealthOutcome,
+              actionOpenApiOutcome:$actionOpenApiOutcome,
+              gameplayOutcome:$gameplayOutcome,
+              bridgeOutcome:$bridgeOutcome,
               managedBy:"production-runtime-reconcile",
               secretsIncluded:false
             }' > "$EVIDENCE_PATH"
