@@ -43,6 +43,8 @@ test('production env reconciliation reuses values and manages only bounded crede
   assert.match(workflow, /::add-mask::/, 'read/generated credentials must be masked before later steps');
   assert.match(workflow, /Protected Action credentials are read-only/, 'workflow must state the protected Action boundary');
   assert.doesNotMatch(workflow, /upsert_env[^\n]*(UAL_ACTION_API_KEY|GITHUB_TOKEN|GITHUB_CONTROL_TOKEN|GITHUB_CONTROL_OWNERS)/, 'protected Action credentials must never be upserted');
+  assert.doesNotMatch(workflow, /PRODUCTION_ACTION_KEY/, 'protected Action bearer must not be copied into GitHub workflow state');
+  assert.doesNotMatch(workflow, /action_key=\$\(production_value[^\n]*UAL_ACTION_API_KEY/, 'reconciler must not recover the protected Action bearer through the project-env listing');
 });
 
 test('browser snapshot is reused only while implementation and provider lifetime remain valid', () => {
@@ -85,6 +87,8 @@ test('production acceptance proves runtime, OpenAPI, gameplay, and bounded bridg
     'endGameQaSession',
   ]) assert.match(workflow, new RegExp(operation), `OpenAPI must expose ${operation}`);
   assert.match(workflow, /npm run test:remote/, 'provider-backed Canvas gameplay acceptance is required');
+  assert.match(workflow, /vercel@59\.1\.4 env run[\s\S]*--environment production/, 'bridge smoke must inject the actual Action Production environment only into its subprocess');
+  assert.match(workflow, /UAL_ACTION_API_KEY/, 'bridge smoke must authenticate with the existing protected Action bearer');
   assert.match(workflow, /\/game-browser\/session-start/, 'bridge smoke must start a real bounded session');
   assert.match(workflow, /\/game-browser\/observe/, 'bridge smoke must observe the session');
   assert.match(workflow, /\/game-browser\/session-end/, 'bridge smoke must release the session');
