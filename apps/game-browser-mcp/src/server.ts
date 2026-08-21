@@ -3,11 +3,12 @@ import express, { type RequestHandler } from 'express';
 import { createMcpExpressApp } from '@modelcontextprotocol/express';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 
-import { SignedBearerPrincipalResolver } from './auth/principal.js';
+import { createRegistrationHandler } from './admin/register-deployment.js';
+import { SignedBearerPrincipalResolver, StaticPrincipalResolver, type PrincipalResolver } from './auth/principal.js';
 import { VercelSandboxBrowser } from './browser/vercel-sandbox-browser.js';
+import { createGptActionBridgeRouter, deriveGptActionBridgeBinding } from './bridge/gpt-action-bridge.js';
 import { loadRuntimeConfig } from './env.js';
 import { createGameMcpHandler, type GameToolSurface } from './mcp.js';
-import { createRegistrationHandler } from './admin/register-deployment.js';
 import { CapabilityRegistrationStore, RegistrationCapabilityCodec } from './provenance/registration-capability.js';
 import { RegistrationService } from './provenance/registration-service.js';
 import { VercelDeploymentVerifier } from './provenance/vercel-deployment.js';
@@ -17,6 +18,7 @@ import { createGameToolServices } from './tools/index.js';
 export interface RuntimeAppOptions {
   allowedHosts: string[];
   registrationHandler?: RequestHandler;
+  gptActionBridgeHandler?: RequestHandler;
 }
 
 export type GameToolSurfaceFactory = (authorization: string | undefined) => GameToolSurface;
@@ -52,6 +54,7 @@ export function createRuntimeApp(services: GameToolSurface | GameToolSurfaceFact
   app.get('/fixture/expected-failure', (_req, res) => res.status(404).json({ error: 'EXPECTED_REMOTE_QA_NETWORK_FAILURE' }));
   app.use('/fixture', express.static(fixtureRoot, { fallthrough: false, index: 'index.html' }));
   if (options.registrationHandler) app.post('/internal/registrations', options.registrationHandler);
+  if (options.gptActionBridgeHandler) app.use('/internal/gpt-action', options.gptActionBridgeHandler);
 
   app.all('/mcp', (req, res) => {
     const surface = isFactory(services) ? services(req.header('authorization')) : services;
@@ -86,7 +89,11 @@ export function createProductionRuntimeApp(env: Record<string, string | undefine
   const registrationCapabilitySecret = required(env, 'REGISTRATION_CAPABILITY_SECRET');
   const ownerBindingSecret = required(env, 'OWNER_BINDING_SECRET');
   const principalAudience = required(env, 'PRINCIPAL_AUDIENCE');
-  for (const name of ['TARGET_PROJECT_ID', 'TARGET_REPOSITORY_OWNER', 'TARGET_REPOSITORY_NAME', 'TARGET_ENTRY_PATH', 'APPROVED_DEPLOYMENT_HOST_PATTERNS']) required(env, name);
+  const targetProjectId = required(env, 'TARGET_PROJECT_ID');
+  const targetRepositoryOwner = required(env, 'TARGET_REPOSITORY_OWNER');
+  const targetRepositoryName = required(env, 'TARGET_REPOSITORY_NAME');
+  required(env, 'TARGET_ENTRY_PATH');
+  required(env, 'APPROVED_DEPLOYMENT_HOST_PATTERNS');
 
   const config = loadRuntimeConfig(env);
   if (config.trust.approvedDeploymentHostPatterns.length === 0) throw new Error('production configuration requires APPROVED_DEPLOYMENT_HOST_PATTERNS');
@@ -113,28 +120,61 @@ export function createProductionRuntimeApp(env: Record<string, string | undefine
   const registrationService = new RegistrationService({ verifier, codec, trust: config.trust });
   const registrationHandler = createRegistrationHandler(registrationService, registrationControlToken);
 
-  const servicesFactory: GameToolSurfaceFactory = (authorization) => createGameToolServices({
+  const resolveDns = async (hostname: string) => {
+    const { lookup } = await import('node:dns/promises');
+    const answers = await lookup(hostname, { all: true, verbatim: true });
+    return answers.map(({ address, family }) => ({ address, family: family as 4 | 6 }));
+  };
+  const rateLimits = {
+    sessionStarts: sessionStartsPerMinute,
+    actionCalls: actionCallsPerMinute,
+    windowMs: 60_000,
+  };
+  const createSurface = (principals: PrincipalResolver) => createGameToolServices({
     registrations,
     sessions,
     browser,
     verifier,
-    principals: { resolve: () => bearerResolver.resolve({ authorization }) },
-    resolveDns: async (hostname) => {
-      const { lookup } = await import('node:dns/promises');
-      const answers = await lookup(hostname, { all: true, verbatim: true });
-      return answers.map(({ address, family }) => ({ address, family: family as 4 | 6 }));
-    },
+    principals,
+    resolveDns,
     limits: config.limits,
     // Coarse production rate limiting is configured at Vercel/WAF. These values remain
     // available to injected/test limiters but production does not depend on a shared DB.
-    rateLimits: {
-      sessionStarts: sessionStartsPerMinute,
-      actionCalls: actionCallsPerMinute,
-      windowMs: 60_000,
-    },
+    rateLimits,
   });
 
-  return createRuntimeApp(servicesFactory, { allowedHosts: [...new Set(runtimeAllowedHosts)], registrationHandler });
+  const servicesFactory: GameToolSurfaceFactory = (authorization) => createSurface({
+    resolve: () => bearerResolver.resolve({ authorization }),
+  });
+
+  const bridgeToken = env.GPT_ACTION_BRIDGE_TOKEN?.trim();
+  const bridgeSurface = bridgeToken
+    ? createSurface(new StaticPrincipalResolver(deriveGptActionBridgeBinding(bridgeToken)))
+    : undefined;
+  const registerForCommit = bridgeToken
+    ? async (expectedCommitSha: string) => {
+      const exactDeployment = await verifier.findReadyForCommit({
+        expectedCommitSha,
+        repository: { owner: targetRepositoryOwner, name: targetRepositoryName },
+        projectId: targetProjectId,
+      });
+      return registrationService.register({
+        deploymentId: exactDeployment.deploymentId,
+        expectedCommitSha,
+      });
+    }
+    : undefined;
+  const gptActionBridgeHandler = createGptActionBridgeRouter({
+    token: bridgeToken,
+    surface: bridgeSurface,
+    registerForCommit,
+  });
+
+  return createRuntimeApp(servicesFactory, {
+    allowedHosts: [...new Set(runtimeAllowedHosts)],
+    registrationHandler,
+    gptActionBridgeHandler,
+  });
 }
 
 let cachedProductionApp: ReturnType<typeof createProductionRuntimeApp> | undefined;

@@ -48,10 +48,21 @@ APPROVED_REDIRECT_HOSTS
 RUNTIME_ALLOWED_HOSTS
 SESSION_STARTS_PER_MINUTE
 ACTION_CALLS_PER_MINUTE
+GPT_ACTION_BRIDGE_TOKEN      # enables the private fixed-route Custom GPT Action bridge
 AGENT_BROWSER_VERSION        # required when building a browser snapshot
 ```
 
 `TARGET_ENTRY_PATH` is server-owned, such as `/fixture/`; a model cannot supply it. `APPROVED_DEPLOYMENT_HOST_PATTERNS` is only a discovery constraint: each concrete `dpl_...` deployment is still verified against Vercel project/repository/commit provenance. `RUNTIME_ALLOWED_HOSTS` protects the MCP HTTP host surface; Vercel's `VERCEL_URL` is also accepted automatically at runtime.
+
+## Private Custom GPT Action bridge
+
+When `GPT_ACTION_BRIDGE_TOKEN` is configured, the runtime also accepts six fixed server-to-server JSON routes under `/internal/gpt-action/`: session start, observe, input, read-state, reset, and session end. They call the same reviewed game-tool services used by `/mcp`; there is no generic browser-operation passthrough.
+
+The bridge exists for the private Autonomous Dev Loop Custom GPT, which already uses GPT Actions for bounded GitHub control. The bridge token is server-side only and derives one stable private integration principal for session ownership. It does **not** claim general multi-user ChatGPT App identity or Plugin Directory readiness.
+
+Bridge session start accepts only an exact 40-character Git commit SHA plus an optional bounded viewport. The runtime searches at most the newest 20 deployments of the server-configured Vercel project, requires an exact READY repository/commit match, re-verifies the immutable `dpl_...` deployment through the existing provenance verifier, then issues the normal short-lived registration capability. The caller cannot supply a target URL, project ID, repository, dependency host, redirect host, or deployment ID.
+
+If `GPT_ACTION_BRIDGE_TOKEN` is absent, the private bridge fails closed while `/mcp`, fixture, health, and exact deployment registration continue operating normally.
 
 ## Durable session boundary
 
@@ -64,6 +75,8 @@ A persistent filesystem is **not** evidence that Chromium survived. Every fresh 
 `OWNER_BINDING_SECRET` signs/verifies the synthetic bearer principal used for provider-backed `RUNTIME_COMPLETE` acceptance. This proves session ownership/isolation without depending on a user's local computer.
 
 It is **not** evidence that the target ChatGPT account has a production OAuth/app identity. `CHATGPT_LOOP_READY` additionally requires the actual supported ChatGPT App/MCP authentication path to yield a stable signed principal. If that surface cannot do so safely, fail closed rather than inferring identity from IP address, User-Agent, or browser content.
+
+The private GPT Action bridge has a narrower acceptance claim: it may prove that the saved private GPT can invoke remote game-QA operations while keeping GitHub control in the same Action integration. It does not replace the multi-user app-identity requirement above.
 
 ## Browser snapshot
 
