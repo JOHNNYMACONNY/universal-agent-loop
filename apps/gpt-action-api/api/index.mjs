@@ -1,4 +1,4 @@
-import { handleActionRequest } from '../src/app.mjs';
+import { handleActionRequest } from '../src/action-router.mjs';
 
 export default async function handler(req, res) {
   const host = req.headers.host;
