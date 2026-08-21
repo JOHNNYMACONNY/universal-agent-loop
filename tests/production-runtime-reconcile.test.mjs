@@ -47,6 +47,22 @@ test('production env reconciliation reuses values and manages only bounded crede
   assert.doesNotMatch(workflow, /action_key=\$\(production_value[^\n]*UAL_ACTION_API_KEY/, 'reconciler must not recover the protected Action bearer through the project-env listing');
 });
 
+test('browser runtime auth material is consumed from the effective Production environment', () => {
+  assert.doesNotMatch(workflow, /echo "REGISTRATION_CONTROL_TOKEN=\$registration_control" >> "\$GITHUB_ENV"/, 'registration control token must not be copied into GitHub workflow state');
+  assert.doesNotMatch(workflow, /echo "REGISTRATION_CAPABILITY_SECRET=\$registration_capability" >> "\$GITHUB_ENV"/, 'registration capability secret must not be copied into GitHub workflow state');
+  assert.doesNotMatch(workflow, /echo "OWNER_BINDING_SECRET=\$owner_binding" >> "\$GITHUB_ENV"/, 'owner binding secret must not be copied into GitHub workflow state');
+  assert.match(
+    workflow,
+    /name:\s*Register exact browser Production deployment[\s\S]*VERCEL_PROJECT_ID="\$BROWSER_PROJECT_ID"[\s\S]*vercel@59\.1\.4 env run --environment production[\s\S]*register-vercel-deployment\.ts/,
+    'registration must use the browser project effective Production environment',
+  );
+  assert.match(
+    workflow,
+    /name:\s*Issue short-lived Production acceptance principal[\s\S]*VERCEL_PROJECT_ID="\$BROWSER_PROJECT_ID"[\s\S]*vercel@59\.1\.4 env run --environment production[\s\S]*issue-test-principal\.ts/,
+    'acceptance principal issuance must use the browser project effective Production environment',
+  );
+});
+
 test('browser snapshot is reused only while implementation and provider lifetime remain valid', () => {
   assert.match(workflow, /AGENT_BROWSER_VERSION:\s*0\.34\.0/, 'browser version must remain pinned');
   assert.match(workflow, /sandbox\/worker\.mjs/, 'worker implementation must participate in snapshot fingerprint');
