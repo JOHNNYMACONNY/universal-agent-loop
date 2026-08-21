@@ -19,9 +19,9 @@ interface RegistrationRef {
 }
 
 export interface GptActionBridgeOptions {
-  token?: string;
-  surface?: GameToolSurface;
-  registerForCommit?: (expectedCommitSha: string) => Promise<RegistrationRef>;
+  token?: string | undefined;
+  surface?: GameToolSurface | undefined;
+  registerForCommit?: ((expectedCommitSha: string) => Promise<RegistrationRef>) | undefined;
 }
 
 function bearerToken(value: string | undefined): string {
