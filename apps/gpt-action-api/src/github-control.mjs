@@ -65,6 +65,10 @@ function validCommitSha(value) {
   return typeof value === 'string' && /^[A-Fa-f0-9]{6,64}$/.test(value);
 }
 
+function exactCommitSha(value) {
+  return typeof value === 'string' && /^[A-Fa-f0-9]{40}$/.test(value);
+}
+
 function encodePath(path) {
   return path.split('/').map(encodeURIComponent).join('/');
 }
@@ -348,12 +352,17 @@ async function createWorkingBranch(request, env, fetchImpl) {
   if (repository.error) return repository.error;
   if (body.branch === repository.payload.default_branch) return result(400, { error: 'INVALID_WORKING_BRANCH' });
   const fromRef = body.fromRef ?? repository.payload.default_branch;
-  const source = await githubJson(
-    `${API}/repos/${prepared.repositoryInfo.owner}/${prepared.repositoryInfo.repo}/git/ref/heads/${encodePath(fromRef)}`,
-    context,
-  );
+  const source = exactCommitSha(fromRef)
+    ? await githubJson(
+      `${API}/repos/${prepared.repositoryInfo.owner}/${prepared.repositoryInfo.repo}/git/commits/${fromRef}`,
+      context,
+    )
+    : await githubJson(
+      `${API}/repos/${prepared.repositoryInfo.owner}/${prepared.repositoryInfo.repo}/git/ref/heads/${encodePath(fromRef)}`,
+      context,
+    );
   if (source.error) return source.error;
-  const sourceSha = source.payload?.object?.sha;
+  const sourceSha = exactCommitSha(fromRef) ? source.payload?.sha : source.payload?.object?.sha;
   if (typeof sourceSha !== 'string') return result(502, { error: 'GITHUB_CONTROL_INVALID_RESPONSE' });
   const created = await githubJson(
     `${API}/repos/${prepared.repositoryInfo.owner}/${prepared.repositoryInfo.repo}/git/refs`,
