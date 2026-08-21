@@ -251,8 +251,13 @@ function dispatch() {
     ledger.browserRecoveryRequired = false;
     ledger.browserBatches = {};
     ab(['open', ledger.targetUrl]);
+    const url = stringField(ab(['get', 'url']), 'url');
     save(ledger);
-    output({ observation: observe(ledger) });
+    output({ observation: {
+      url,
+      capturedAt: new Date().toISOString(),
+      ...held(ledger),
+    } });
     return;
   }
   if (request.type === 'release') {
