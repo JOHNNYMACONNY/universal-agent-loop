@@ -47,4 +47,16 @@ test('relay bounds request size and replacement cardinality', () => {
   assert.match(text, /\.operations \| type == "array" and length >= 1 and length <= 4/);
   assert.match(text, /\.replacements \| type == "array" and length >= 1 and length <= 8/);
   assert.match(text, /\.old \| type == "string" and length >= 1/);
+  assert.match(text, /\[\.operations\[\]\.path\] \| unique \| length/);
+});
+
+test('relay preflights all replacements before first write and serializes requests', () => {
+  const text = workflow();
+  assert.match(text, /concurrency:\s*\n\s+group: production-action-request\s*\n\s+cancel-in-progress: false/);
+  const preflight = text.indexOf('Preflight all exact replacements before any write');
+  const write = text.indexOf('Write preflighted replacements through Production Action');
+  assert.ok(preflight >= 0, 'preflight step is required');
+  assert.ok(write > preflight, 'write step must occur only after complete preflight');
+  assert.match(text, /expected_current=/);
+  assert.match(text, /PR head moved during relay execution/);
 });
