@@ -20,7 +20,7 @@ test('Production reconciler is the only automatic Vercel deployment owner for bo
   assert.equal(actionConfig.git?.deploymentEnabled, false);
 });
 
-test('reconciler reuses an exact healthy Production deployment when config is unchanged', async () => {
+test('reconciler reuses only an exact healthy canonical Production deployment when config is unchanged', async () => {
   const workflow = await readFile(reconcileUrl, 'utf8');
 
   for (const app of ['browser', 'Action']) {
@@ -36,9 +36,11 @@ test('reconciler reuses an exact healthy Production deployment when config is un
     assert.match(block, /CONFIG_CHANGED/);
     assert.match(block, /current_state/);
     assert.match(block, /current_sha/);
+    assert.match(block, /current_provenance_ok/);
+    assert.match(block, /v13\/deployments\/\$current_url\?teamId=/);
     assert.match(block, /health/);
     assert.match(block, /need_deploy=0/);
-    assert.match(block, /if \[ "\$CONFIG_CHANGED" = '1' \] \|\| \[ "\$current_state" != 'READY' \] \|\| \[ "\$current_sha" != "\$CANDIDATE_SHA" \] \|\| \[ "\$health" != '200' \]; then/);
+    assert.match(block, /if \[ "\$CONFIG_CHANGED" = '1' \] \|\| \[ "\$current_state" != 'READY' \] \|\| \[ "\$current_sha" != "\$CANDIDATE_SHA" \] \|\| \[ "\$current_provenance_ok" != '1' \] \|\| \[ "\$health" != '200' \]; then/);
     assert.match(block, /else[\s\S]*?deployment_url="https:\/\/\$current_url"[\s\S]*?reused=true/);
   }
 });

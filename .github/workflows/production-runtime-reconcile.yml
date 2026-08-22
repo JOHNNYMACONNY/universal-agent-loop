@@ -300,9 +300,26 @@ jobs:
           current_url=$(jq -r '.url // empty' <<<"$current")
           current_state=$(jq -r '.state // .readyState // empty' <<<"$current")
           current_sha=$(jq -r '.meta.githubCommitSha // .gitSource.sha // empty' <<<"$current")
+          current_provenance_ok=0
+          if [ -n "$current_url" ]; then
+            current_status=$(curl -sS -o /tmp/current-browser-deployment.json -w '%{http_code}' -H "$auth" \
+              "$api/v13/deployments/$current_url?teamId=$VERCEL_TEAM_ID&withGitRepoInfo=true")
+            if [ "$current_status" = '200' ]; then
+              current_ref=$(jq -r '.meta.githubCommitRef // empty' /tmp/current-browser-deployment.json)
+              current_source=$(jq -r '.source // empty' /tmp/current-browser-deployment.json)
+              current_org=$(jq -r '.meta.githubCommitOrg // .meta.githubOrg // empty' /tmp/current-browser-deployment.json)
+              current_repo=$(jq -r '.meta.githubCommitRepo // .meta.githubRepo // empty' /tmp/current-browser-deployment.json)
+              if [ "$current_ref" = 'main' ] || { [ "$current_ref" = 'HEAD' ] && [ "$current_source" = 'cli' ]; }; then
+                current_provenance_ok=1
+              fi
+              if [ "$current_org" != "$TARGET_REPOSITORY_OWNER" ] || [ "$current_repo" != "$TARGET_REPOSITORY_NAME" ]; then
+                current_provenance_ok=0
+              fi
+            fi
+          fi
           health=$(curl -sS -o /tmp/browser-health-before.json -w '%{http_code}' "$BROWSER_PRODUCTION_URL/healthz" || true)
           need_deploy=0
-          if [ "$CONFIG_CHANGED" = '1' ] || [ "$current_state" != 'READY' ] || [ "$current_sha" != "$CANDIDATE_SHA" ] || [ "$health" != '200' ]; then
+          if [ "$CONFIG_CHANGED" = '1' ] || [ "$current_state" != 'READY' ] || [ "$current_sha" != "$CANDIDATE_SHA" ] || [ "$current_provenance_ok" != '1' ] || [ "$health" != '200' ]; then
             need_deploy=1
           fi
 
@@ -390,9 +407,26 @@ jobs:
           current_url=$(jq -r '.url // empty' <<<"$current")
           current_state=$(jq -r '.state // .readyState // empty' <<<"$current")
           current_sha=$(jq -r '.meta.githubCommitSha // .gitSource.sha // empty' <<<"$current")
+          current_provenance_ok=0
+          if [ -n "$current_url" ]; then
+            current_status=$(curl -sS -o /tmp/current-action-deployment.json -w '%{http_code}' -H "$auth" \
+              "$api/v13/deployments/$current_url?teamId=$VERCEL_TEAM_ID&withGitRepoInfo=true")
+            if [ "$current_status" = '200' ]; then
+              current_ref=$(jq -r '.meta.githubCommitRef // empty' /tmp/current-action-deployment.json)
+              current_source=$(jq -r '.source // empty' /tmp/current-action-deployment.json)
+              current_org=$(jq -r '.meta.githubCommitOrg // .meta.githubOrg // empty' /tmp/current-action-deployment.json)
+              current_repo=$(jq -r '.meta.githubCommitRepo // .meta.githubRepo // empty' /tmp/current-action-deployment.json)
+              if [ "$current_ref" = 'main' ] || { [ "$current_ref" = 'HEAD' ] && [ "$current_source" = 'cli' ]; }; then
+                current_provenance_ok=1
+              fi
+              if [ "$current_org" != "$TARGET_REPOSITORY_OWNER" ] || [ "$current_repo" != "$TARGET_REPOSITORY_NAME" ]; then
+                current_provenance_ok=0
+              fi
+            fi
+          fi
           health=$(curl -sS -o /tmp/action-health-before.json -w '%{http_code}' "$ACTION_PRODUCTION_URL/health" || true)
           need_deploy=0
-          if [ "$CONFIG_CHANGED" = '1' ] || [ "$current_state" != 'READY' ] || [ "$current_sha" != "$CANDIDATE_SHA" ] || [ "$health" != '200' ]; then
+          if [ "$CONFIG_CHANGED" = '1' ] || [ "$current_state" != 'READY' ] || [ "$current_sha" != "$CANDIDATE_SHA" ] || [ "$current_provenance_ok" != '1' ] || [ "$health" != '200' ]; then
             need_deploy=1
           fi
 

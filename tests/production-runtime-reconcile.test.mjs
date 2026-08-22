@@ -90,6 +90,10 @@ test('production deployments are exact-main and verified rather than blind redep
   assert.equal((workflow.match(/meta_org=\$\(jq -r '\.meta\.githubCommitOrg \/\/ \.meta\.githubOrg \/\/ empty'/g) ?? []).length, 2, 'both Production deployments must inspect provider repository owner');
   assert.equal((workflow.match(/meta_repo=\$\(jq -r '\.meta\.githubCommitRepo \/\/ \.meta\.githubRepo \/\/ empty'/g) ?? []).length, 2, 'both Production deployments must inspect provider repository name');
   assert.equal((workflow.match(/\[ "\$meta_org" = "\$TARGET_REPOSITORY_OWNER" \] && \[ "\$meta_repo" = "\$TARGET_REPOSITORY_NAME" \]/g) ?? []).length, 2, 'both Production deployments must prove canonical repository identity');
+  assert.equal((workflow.match(/^\s*current_provenance_ok=0\n\s*if \[ -n "\$current_url" \]/gm) ?? []).length, 2, 'both Production deployment resolvers must default current provenance to untrusted');
+  assert.equal((workflow.match(/current_provenance_ok=1/g) ?? []).length, 2, 'both Production deployment resolvers must explicitly prove reusable provenance');
+  assert.equal((workflow.match(/current_provenance_ok" != '1'/g) ?? []).length, 2, 'noncanonical current deployments must force a fresh exact CLI deployment');
+  assert.equal((workflow.match(/v13\/deployments\/\$current_url\?teamId=/g) ?? []).length, 2, 'reuse decisions must inspect full provider deployment metadata rather than the summary list alone');
   assert.doesNotMatch(workflow, /\bredeploy\b/i, 'workflow must not recreate a stale deployment source through Redeploy');
 });
 
