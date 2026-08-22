@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import test from 'node:test';
 
 import { handleGameBrowserControlRequest } from '../apps/gpt-action-api/src/game-browser-control.mjs';
@@ -67,14 +67,17 @@ test('Action projection exposes a short-lived signed HTTPS link for the already-
   assert.equal(JSON.stringify(observed.body).includes(screenshot.base64), false);
   assert.equal(JSON.stringify(observed.body).includes(screenshot.path), false);
 
+  const frameSha256 = createHash('sha256').update(pngBytes).digest('hex');
+  assert.equal(descriptor.frame_sha256, frameSha256);
   const screenshotUrl = new URL(descriptor.screenshot_url);
   assert.equal(screenshotUrl.searchParams.get('session_id'), 'session_123');
+  assert.equal(screenshotUrl.searchParams.get('frame_sha256'), frameSha256);
   const expires = Number(screenshotUrl.searchParams.get('expires'));
   assert.equal(Number.isSafeInteger(expires), true);
   assert.ok(expires > Date.now());
   assert.ok(expires <= Date.now() + 5 * 60_000);
   const expectedSignature = createHmac('sha256', 'bridge-secret-value')
-    .update(`ual:game-browser-screenshot-link:v1\nsession_123\n${expires}`, 'utf8')
+    .update(`ual:game-browser-screenshot-link:v1\nsession_123\n${frameSha256}\n${expires}`, 'utf8')
     .digest('hex');
   assert.equal(screenshotUrl.searchParams.get('sig'), expectedSignature);
   assert.equal(calls.length, 1);
@@ -104,4 +107,5 @@ test('Action projection fails closed instead of issuing a capability for oversiz
   assert.equal(JSON.stringify(response.body).includes(oversized.base64), false);
   assert.equal(JSON.stringify(response.body).includes(oversized.path), false);
 });
+
 
