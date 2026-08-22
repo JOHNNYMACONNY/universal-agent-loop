@@ -16,7 +16,8 @@ env:
   VERCEL_TEAM_ID: team_3LfEMNVsAEbXKLoCrnzXQzrF
   ACTION_PROJECT_ID: prj_80jo2dodxOmSSvX6muUc7Tc7wIo1
   ACTION_URL: https://ual-gpt-action-api.vercel.app
-  REQUEST_MAX_BYTES: '60000'
+  REQUEST_MAX_BYTES: '4096'
+  PLAN_MAX_BYTES: '60000'
 
 jobs:
   apply-request:
@@ -30,7 +31,7 @@ jobs:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       REQUEST_BODY: ${{ github.event.issue.body }}
     steps:
-      - name: Validate bounded owner request
+      - name: Validate bounded owner request pointer
         shell: bash
         run: |
           set -euo pipefail
@@ -43,18 +44,9 @@ jobs:
             (.pullRequest | type == "number" and . >= 1 and floor == .) and
             (.branch | type == "string" and test("^chatgpt\\/")) and
             (.expectedHead | type == "string" and test("^[0-9a-fA-F]{40}$")) and
-            (.operations | type == "array" and length >= 1 and length <= 4) and
-            ([.operations[].path] | unique | length) == (.operations | length) and
-            all(.operations[];
-              (.path | type == "string" and length >= 1 and length <= 1024 and (startswith("/") | not) and (contains("..") | not)) and
-              (.message | type == "string" and length >= 1 and length <= 300) and
-              (.replacements | type == "array" and length >= 1 and length <= 8) and
-              all(.replacements[];
-                (.old | type == "string" and length >= 1) and
-                (.new | type == "string") and
-                (.old != .new)
-              )
-            )
+            (.planRef | type == "string" and test("^[0-9a-fA-F]{40}$")) and
+            (.planBlobSha | type == "string" and test("^[0-9a-fA-F]{40}$")) and
+            (.planPath | type == "string" and startswith(".ual/action-requests/") and length <= 1024 and (contains("..") | not) and endswith(".json"))
           ' /tmp/request.json > /dev/null
 
       - name: Resolve Production Action bearer without exposing it
@@ -98,6 +90,42 @@ jobs:
           [ "$(jq -r '.head.ref' /tmp/pr-before.json)" = "$branch" ] || { echo '::error::Target PR branch does not match request'; exit 1; }
           [ "$(jq -r '.head.sha' /tmp/pr-before.json)" = "$expected" ] || { echo '::error::Target PR head moved; request is stale'; exit 1; }
 
+      - name: Load and validate immutable target-repo repair plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          repository=$(jq -r '.repository' /tmp/request.json)
+          plan_ref=$(jq -r '.planRef' /tmp/request.json)
+          plan_path=$(jq -r '.planPath' /tmp/request.json)
+          expected_blob=$(jq -r '.planBlobSha' /tmp/request.json)
+          status=$(curl -sS -G -o /tmp/plan-file.json -w '%{http_code}' \
+            -H "Authorization: Bearer $ACTION_KEY" \
+            --data-urlencode "repository=$repository" \
+            --data-urlencode "path=$plan_path" \
+            --data-urlencode "ref=$plan_ref" \
+            "$ACTION_URL/github/file")
+          [ "$status" = '200' ] || { echo "::error::Production Action plan read failed (HTTP $status)"; cat /tmp/plan-file.json; exit 1; }
+          actual_blob=$(jq -r '.blobSha // empty' /tmp/plan-file.json)
+          [ "$actual_blob" = "$expected_blob" ] || { echo '::error::Repair plan blob does not match immutable request pointer'; exit 1; }
+          jq -r '.content' /tmp/plan-file.json > /tmp/plan.json
+          bytes=$(wc -c < /tmp/plan.json | tr -d ' ')
+          [ "$bytes" -le "$PLAN_MAX_BYTES" ] || { echo "::error::Repair plan exceeds $PLAN_MAX_BYTES bytes"; exit 1; }
+          jq -e '
+            .planVersion == 1 and
+            (.operations | type == "array" and length >= 1 and length <= 4) and
+            ([.operations[].path] | unique | length) == (.operations | length) and
+            all(.operations[];
+              (.path | type == "string" and length >= 1 and length <= 1024 and (startswith("/") | not) and (contains("..") | not)) and
+              (.message | type == "string" and length >= 1 and length <= 300) and
+              (.replacements | type == "array" and length >= 1 and length <= 8) and
+              all(.replacements[];
+                (.old | type == "string" and length >= 1) and
+                (.new | type == "string") and
+                (.old != .new)
+              )
+            )
+          ' /tmp/plan.json > /dev/null
+
       - name: Preflight all exact replacements before any write
         shell: bash
         run: |
@@ -106,10 +134,10 @@ jobs:
           branch=$(jq -r '.branch' /tmp/request.json)
           pr=$(jq -r '.pullRequest' /tmp/request.json)
           expected=$(jq -r '.expectedHead' /tmp/request.json)
-          operation_count=$(jq -r '.operations | length' /tmp/request.json)
+          operation_count=$(jq -r '.operations | length' /tmp/plan.json)
 
           for ((i=0; i<operation_count; i++)); do
-            jq ".operations[$i]" /tmp/request.json > "/tmp/op-$i.json"
+            jq ".operations[$i]" /tmp/plan.json > "/tmp/op-$i.json"
             path=$(jq -r '.path' "/tmp/op-$i.json")
             status=$(curl -sS -G -o "/tmp/file-$i-before.json" -w '%{http_code}' \
               -H "Authorization: Bearer $ACTION_KEY" \
@@ -143,8 +171,6 @@ jobs:
           PY
           done
 
-          # Re-pin after all reads/transforms so a concurrent head move cannot
-          # turn a successful preflight into a write against stale evidence.
           status=$(curl -sS -G -o /tmp/pr-after-preflight.json -w '%{http_code}' \
             -H "Authorization: Bearer $ACTION_KEY" \
             --data-urlencode "repository=$repository" \
@@ -161,13 +187,11 @@ jobs:
           repository=$(jq -r '.repository' /tmp/request.json)
           branch=$(jq -r '.branch' /tmp/request.json)
           pr=$(jq -r '.pullRequest' /tmp/request.json)
-          operation_count=$(jq -r '.operations | length' /tmp/request.json)
+          operation_count=$(jq -r '.operations | length' /tmp/plan.json)
           expected_current=$(jq -r '.expectedHead' /tmp/request.json)
           final_commit=''
 
           for ((i=0; i<operation_count; i++)); do
-            # Every write is preceded by an exact head check. The prior Action
-            # commit becomes the only accepted head for the next operation.
             status=$(curl -sS -G -o /tmp/pr-before-write.json -w '%{http_code}' \
               -H "Authorization: Bearer $ACTION_KEY" \
               --data-urlencode "repository=$repository" \
