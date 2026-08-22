@@ -1,0 +1,85 @@
+{
+  "planVersion": 1,
+  "operations": [
+    {
+      "path": "apps/gpt-action-api/src/game-browser-control.mjs",
+      "message": "fix(action): bind screenshot capability to exact frame digest",
+      "replacements": [
+        {
+          "old": "import { createHmac } from 'node:crypto';",
+          "new": "import { createHash, createHmac } from 'node:crypto';"
+        },
+        {
+          "old": "function screenshotLinkSignature(token, sessionId, expiresAtMs) {\n  return createHmac('sha256', token)\n    .update(`ual:game-browser-screenshot-link:v1\\n${sessionId}\\n${expiresAtMs}`, 'utf8')\n    .digest('hex');\n}",
+          "new": "function screenshotLinkSignature(token, sessionId, frameSha256, expiresAtMs) {\n  return createHmac('sha256', token)\n    .update(`ual:game-browser-screenshot-link:v1\\n${sessionId}\\n${frameSha256}\\n${expiresAtMs}`, 'utf8')\n    .digest('hex');\n}"
+        },
+        {
+          "old": "  const base64 = typeof value.base64 === 'string' ? value.base64 : undefined;\n  let bytes;\n  if (base64 !== undefined) {\n    try { bytes = Buffer.from(base64, 'base64').byteLength; } catch { bytes = 0; }\n  }\n  if (!base64 || !context.sessionId || !bytes || bytes > MAX_SCREENSHOT_BYTES) {",
+          "new": "  const base64 = typeof value.base64 === 'string' ? value.base64 : undefined;\n  let decoded;\n  let bytes;\n  if (base64 !== undefined) {\n    try { decoded = Buffer.from(base64, 'base64'); bytes = decoded.byteLength; } catch { bytes = 0; }\n  }\n  if (!base64 || !decoded || !context.sessionId || !bytes || bytes > MAX_SCREENSHOT_BYTES) {"
+        },
+        {
+          "old": "  const expiresAtMs = context.nowMs + SCREENSHOT_LINK_TTL_MS;\n  const params = new URLSearchParams({\n    session_id: context.sessionId,\n    expires: String(expiresAtMs),\n    sig: screenshotLinkSignature(context.config.token, context.sessionId, expiresAtMs),\n  });\n  return {\n    available: true,\n    transported: true,\n    mime_type: 'image/png',\n    content_trust: 'UNTRUSTED_TARGET_CONTENT',\n    bytes,",
+          "new": "  const frameSha256 = createHash('sha256').update(decoded).digest('hex');\n  const expiresAtMs = context.nowMs + SCREENSHOT_LINK_TTL_MS;\n  const params = new URLSearchParams({\n    session_id: context.sessionId,\n    frame_sha256: frameSha256,\n    expires: String(expiresAtMs),\n    sig: screenshotLinkSignature(context.config.token, context.sessionId, frameSha256, expiresAtMs),\n  });\n  return {\n    available: true,\n    transported: true,\n    mime_type: 'image/png',\n    content_trust: 'UNTRUSTED_TARGET_CONTENT',\n    bytes,\n    frame_sha256: frameSha256,"
+        }
+      ]
+    },
+    {
+      "path": "apps/game-browser-mcp/src/bridge/gpt-action-bridge.ts",
+      "message": "fix(browser): reject screenshot capability if cached frame changed",
+      "replacements": [
+        {
+          "old": "function screenshotLinkSignature(token: string, sessionId: string, expiresAtMs: number): string {\n  return createHmac('sha256', token)\n    .update(`ual:game-browser-screenshot-link:v1\\n${sessionId}\\n${expiresAtMs}`, 'utf8')\n    .digest('hex');\n}",
+          "new": "function screenshotLinkSignature(token: string, sessionId: string, frameSha256: string, expiresAtMs: number): string {\n  return createHmac('sha256', token)\n    .update(`ual:game-browser-screenshot-link:v1\\n${sessionId}\\n${frameSha256}\\n${expiresAtMs}`, 'utf8')\n    .digest('hex');\n}"
+        },
+        {
+          "old": "    const expiresText = queryValue(req.query.expires);\n    const signature = queryValue(req.query.sig);\n    const expiresAtMs = Number(expiresText);\n    const nowMs = Date.now();\n    const expectedSignature = Number.isSafeInteger(expiresAtMs) && sessionId\n      ? screenshotLinkSignature(configured, sessionId, expiresAtMs)\n      : '';\n    const valid = /^[A-Za-z0-9_.-]{1,128}$/.test(sessionId)\n      && Number.isSafeInteger(expiresAtMs)",
+          "new": "    const frameSha256 = queryValue(req.query.frame_sha256);\n    const expiresText = queryValue(req.query.expires);\n    const signature = queryValue(req.query.sig);\n    const expiresAtMs = Number(expiresText);\n    const nowMs = Date.now();\n    const expectedSignature = Number.isSafeInteger(expiresAtMs) && sessionId && /^[0-9a-f]{64}$/.test(frameSha256)\n      ? screenshotLinkSignature(configured, sessionId, frameSha256, expiresAtMs)\n      : '';\n    const valid = /^[A-Za-z0-9_.-]{1,128}$/.test(sessionId)\n      && /^[0-9a-f]{64}$/.test(frameSha256)\n      && Number.isSafeInteger(expiresAtMs)"
+        },
+        {
+          "old": "      const bytes = Buffer.from(base64, 'base64');\n      if (bytes.byteLength === 0 || bytes.byteLength > MAX_SCREENSHOT_BYTES) {\n        throw new RuntimeError('LIMIT_EXCEEDED', 'screenshot exceeds 2 MB evidence limit');\n      }\n      res.status(200);",
+          "new": "      const bytes = Buffer.from(base64, 'base64');\n      if (bytes.byteLength === 0 || bytes.byteLength > MAX_SCREENSHOT_BYTES) {\n        throw new RuntimeError('LIMIT_EXCEEDED', 'screenshot exceeds 2 MB evidence limit');\n      }\n      const actualFrameSha256 = createHash('sha256').update(bytes).digest('hex');\n      if (!safeEqual(actualFrameSha256, frameSha256)) {\n        throw new RuntimeError('ACTION_REJECTED', 'screenshot capability no longer matches the cached frame');\n      }\n      res.status(200);"
+        }
+      ]
+    },
+    {
+      "path": "tests/gpt-action-screenshot-link.test.mjs",
+      "message": "test(action): require exact frame digest in screenshot capability",
+      "replacements": [
+        {
+          "old": "import { createHmac } from 'node:crypto';",
+          "new": "import { createHash, createHmac } from 'node:crypto';"
+        },
+        {
+          "old": "  const screenshotUrl = new URL(descriptor.screenshot_url);\n  assert.equal(screenshotUrl.searchParams.get('session_id'), 'session_123');\n  const expires = Number(screenshotUrl.searchParams.get('expires'));",
+          "new": "  const frameSha256 = createHash('sha256').update(pngBytes).digest('hex');\n  assert.equal(descriptor.frame_sha256, frameSha256);\n  const screenshotUrl = new URL(descriptor.screenshot_url);\n  assert.equal(screenshotUrl.searchParams.get('session_id'), 'session_123');\n  assert.equal(screenshotUrl.searchParams.get('frame_sha256'), frameSha256);\n  const expires = Number(screenshotUrl.searchParams.get('expires'));"
+        },
+        {
+          "old": "  const expectedSignature = createHmac('sha256', 'bridge-secret-value')\n    .update(`ual:game-browser-screenshot-link:v1\\nsession_123\\n${expires}`, 'utf8')\n    .digest('hex');",
+          "new": "  const expectedSignature = createHmac('sha256', 'bridge-secret-value')\n    .update(`ual:game-browser-screenshot-link:v1\\nsession_123\\n${frameSha256}\\n${expires}`, 'utf8')\n    .digest('hex');"
+        }
+      ]
+    },
+    {
+      "path": "apps/game-browser-mcp/tests/gpt-action-bridge.test.ts",
+      "message": "test(browser): prove stale frame capabilities fail closed",
+      "replacements": [
+        {
+          "old": "import { createHmac } from 'node:crypto';",
+          "new": "import { createHash, createHmac } from 'node:crypto';"
+        },
+        {
+          "old": "    const expires = Date.now() + 60_000;\n    const signature = createHmac('sha256', TOKEN)\n      .update(`ual:game-browser-screenshot-link:v1\\nsession_123\\n${expires}`, 'utf8')\n      .digest('hex');\n    const url = `${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&expires=${expires}&sig=${signature}`;",
+          "new": "    const expires = Date.now() + 60_000;\n    const frameSha256 = createHash('sha256').update(Buffer.from('cached-frame')).digest('hex');\n    const signature = createHmac('sha256', TOKEN)\n      .update(`ual:game-browser-screenshot-link:v1\\nsession_123\\n${frameSha256}\\n${expires}`, 'utf8')\n      .digest('hex');\n    const url = `${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&frame_sha256=${frameSha256}&expires=${expires}&sig=${signature}`;"
+        },
+        {
+          "old": "    const before = calls.length;\n    const tampered = await fetch(`${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&expires=${expires}&sig=${'0'.repeat(64)}`);",
+          "new": "    const staleFrameSha256 = createHash('sha256').update(Buffer.from('earlier-frame')).digest('hex');\n    const staleSignature = createHmac('sha256', TOKEN)\n      .update(`ual:game-browser-screenshot-link:v1\\nsession_123\\n${staleFrameSha256}\\n${expires}`, 'utf8')\n      .digest('hex');\n    const stale = await fetch(`${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&frame_sha256=${staleFrameSha256}&expires=${expires}&sig=${staleSignature}`);\n    assert.equal(stale.status, 409);\n    assert.deepEqual(await stale.json(), { error: 'ACTION_REJECTED', message: 'screenshot capability no longer matches the cached frame' });\n\n    const before = calls.length;\n    const tampered = await fetch(`${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&frame_sha256=${frameSha256}&expires=${expires}&sig=${'0'.repeat(64)}`);"
+        },
+        {
+          "old": "    const expiredSignature = createHmac('sha256', TOKEN)\n      .update(`ual:game-browser-screenshot-link:v1\\nsession_123\\n${expired}`, 'utf8')\n      .digest('hex');\n    const expiredResponse = await fetch(`${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&expires=${expired}&sig=${expiredSignature}`);",
+          "new": "    const expiredSignature = createHmac('sha256', TOKEN)\n      .update(`ual:game-browser-screenshot-link:v1\\nsession_123\\n${frameSha256}\\n${expired}`, 'utf8')\n      .digest('hex');\n    const expiredResponse = await fetch(`${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&frame_sha256=${frameSha256}&expires=${expired}&sig=${expiredSignature}`);"
+        }
+      ]
+    }
+  ]
+}
