@@ -98,12 +98,12 @@ test('readState uses closed worker operation rather than exposing eval on adapte
   assert.deepEqual(decoded, { type: 'read_state', session_id: 'session_1', path: '/score' });
 });
 
-test('end still stops and deletes the sandbox when closed worker cleanup fails', async () => {
+test('end deletes the running persistent sandbox directly so normal teardown does not create a stop snapshot', async () => {
   const factory = new FakeFactory();
   factory.handle.failEndWorker = true;
   const browser = new VercelSandboxBrowser({ factory, snapshotId: 'snap_1' });
   await browser.end({ logicalSessionId: 'session_1', sandboxId: 'gbr-session_1' });
-  assert.equal(factory.handle.stopCalls, 1);
+  assert.equal(factory.handle.stopCalls, 0);
   assert.equal(factory.handle.deleteCalls, 1);
   assert.equal(factory.handle.status, 'deleted');
 });
