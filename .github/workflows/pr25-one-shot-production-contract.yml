@@ -1,0 +1,92 @@
+name: pr25-one-shot-production-contract
+
+on:
+  push:
+    branches:
+      - chatgpt/game-browser-screenshot-links
+    paths:
+      - .github/workflows/pr25-one-shot-production-contract.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr25-one-shot-production-contract
+  cancel-in-progress: false
+
+jobs:
+  apply-reviewed-plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/game-browser-screenshot-links
+          fetch-depth: 0
+
+      - name: Apply immutable reviewed replacement plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          plan_ref='f65e2be3850151d96a1bc302668b4910fcd420eb'
+          plan_path='.ual/action-requests/pr-25-production-contract.json'
+          git fetch --no-tags --depth=1 origin "$plan_ref"
+          git show "$plan_ref:$plan_path" > /tmp/plan.json
+          test "$(wc -c < /tmp/plan.json | tr -d ' ')" -le 60000
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          plan = json.loads(Path('/tmp/plan.json').read_text())
+          if plan.get('planVersion') != 1:
+              raise SystemExit('unexpected planVersion')
+          operations = plan.get('operations')
+          if not isinstance(operations, list) or not 1 <= len(operations) <= 4:
+              raise SystemExit('invalid operation count')
+          paths = [op.get('path') for op in operations]
+          if len(set(paths)) != len(paths):
+              raise SystemExit('duplicate target path')
+
+          staged = []
+          for op in operations:
+              path = op.get('path')
+              replacements = op.get('replacements')
+              if not isinstance(path, str) or path.startswith('/') or '..' in Path(path).parts:
+                  raise SystemExit(f'invalid target path: {path!r}')
+              if not isinstance(replacements, list) or not 1 <= len(replacements) <= 8:
+                  raise SystemExit(f'invalid replacement count for {path}')
+              target = Path(path)
+              text = target.read_text()
+              new_text = text
+              for index, replacement in enumerate(replacements, 1):
+                  old = replacement.get('old')
+                  new = replacement.get('new')
+                  if not isinstance(old, str) or not old or not isinstance(new, str):
+                      raise SystemExit(f'invalid replacement {index} for {path}')
+                  count = new_text.count(old)
+                  if count != 1:
+                      raise SystemExit(f'{path}: replacement {index} expected exactly once, found {count}')
+                  new_text = new_text.replace(old, new, 1)
+              staged.append((target, new_text))
+
+          for target, new_text in staged:
+              target.write_text(new_text)
+          PY
+
+      - name: Commit only reviewed target changes and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/pr25-one-shot-production-contract.yml
+          git add \
+            .github/workflows/production-runtime-reconcile.yml \
+            tests/production-runtime-reconcile.test.mjs \
+            docs/superpowers/specs/2026-08-21-gpt-action-game-browser-bridge-design.md \
+            docs/superpowers/specs/2026-08-21-production-runtime-reconciliation-design.md
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(browser): align Production screenshot evidence contract'
+          git push origin HEAD:chatgpt/game-browser-screenshot-links
