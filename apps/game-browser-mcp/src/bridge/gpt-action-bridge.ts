@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 import express, { type Request, type Response } from 'express';
 import { z, ZodError } from 'zod';
@@ -18,9 +18,13 @@ interface RegistrationRef {
   target_registration_id: string;
 }
 
+interface GameBridgeSurface extends GameToolSurface {
+  latestScreenshot(input: unknown): Promise<unknown>;
+}
+
 export interface GptActionBridgeOptions {
   token?: string | undefined;
-  surface?: GameToolSurface | undefined;
+  surface?: GameBridgeSurface | undefined;
   registerForCommit?: ((expectedCommitSha: string) => Promise<RegistrationRef>) | undefined;
 }
 
@@ -39,6 +43,19 @@ function safeEqual(left: string, right: string): boolean {
 export function deriveGptActionBridgeBinding(token: string): string {
   if (!token) throw new Error('GPT Action bridge token is required to derive a principal binding');
   return createHash('sha256').update(`ual:gpt-action-game-browser-bridge:v1:${token}`, 'utf8').digest('hex');
+}
+
+const SCREENSHOT_LINK_TTL_MS = 5 * 60_000;
+const MAX_SCREENSHOT_BYTES = 2_000_000;
+
+function screenshotLinkSignature(token: string, sessionId: string, expiresAtMs: number): string {
+  return createHmac('sha256', token)
+    .update(`ual:game-browser-screenshot-link:v1\n${sessionId}\n${expiresAtMs}`, 'utf8')
+    .digest('hex');
+}
+
+function queryValue(value: unknown): string {
+  return typeof value === 'string' ? value : '';
 }
 
 function errorStatus(error: RuntimeError): number {
@@ -73,6 +90,54 @@ function sendError(res: Response, error: unknown): void {
 
 export function createGptActionBridgeRouter(options: GptActionBridgeOptions) {
   const router = express.Router();
+
+  router.get('/screenshot', async (req, res) => {
+    const configured = options.token?.trim();
+    if (!configured || !options.surface) {
+      res.status(503).json({ error: 'BRIDGE_CONFIGURATION_ERROR' });
+      return;
+    }
+
+    const sessionId = queryValue(req.query.session_id);
+    const expiresText = queryValue(req.query.expires);
+    const signature = queryValue(req.query.sig);
+    const expiresAtMs = Number(expiresText);
+    const nowMs = Date.now();
+    const expectedSignature = Number.isSafeInteger(expiresAtMs) && sessionId
+      ? screenshotLinkSignature(configured, sessionId, expiresAtMs)
+      : '';
+    const valid = /^[A-Za-z0-9_.-]{1,128}$/.test(sessionId)
+      && Number.isSafeInteger(expiresAtMs)
+      && expiresAtMs >= nowMs
+      && expiresAtMs <= nowMs + SCREENSHOT_LINK_TTL_MS
+      && safeEqual(signature, expectedSignature);
+    if (!valid) {
+      res.status(403).json({ error: 'INVALID_SCREENSHOT_LINK' });
+      return;
+    }
+
+    try {
+      const value = await options.surface.latestScreenshot({ session_id: sessionId }) as {
+        screenshot?: { base64?: unknown; mime_type?: unknown; bytes?: unknown };
+      };
+      const base64 = value?.screenshot?.base64;
+      if (typeof base64 !== 'string' || value?.screenshot?.mime_type !== 'image/png') {
+        throw new RuntimeError('CAPABILITY_UNAVAILABLE', 'cached screenshot unavailable');
+      }
+      const bytes = Buffer.from(base64, 'base64');
+      if (bytes.byteLength === 0 || bytes.byteLength > MAX_SCREENSHOT_BYTES) {
+        throw new RuntimeError('LIMIT_EXCEEDED', 'screenshot exceeds 2 MB evidence limit');
+      }
+      res.status(200);
+      res.setHeader('cache-control', 'private, no-store, max-age=0');
+      res.setHeader('content-type', 'image/png');
+      res.setHeader('content-length', String(bytes.byteLength));
+      res.setHeader('x-content-type-options', 'nosniff');
+      res.end(bytes);
+    } catch (error) {
+      sendError(res, error);
+    }
+  });
 
   router.use((req, res, next) => {
     const configured = options.token?.trim();
@@ -121,3 +186,4 @@ export function createGptActionBridgeRouter(options: GptActionBridgeOptions) {
 
   return router;
 }
+
