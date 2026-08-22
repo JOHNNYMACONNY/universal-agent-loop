@@ -135,8 +135,11 @@ Bridge smoke must:
 - authenticate with the existing Production Action key read from Vercel;
 - start a session for the exact candidate SHA;
 - observe the created session;
-- end the session even if the observation assertion fails;
-- reject any claim of visual QA PASS from Action JSON screenshot transport alone.
+- require a signed screenshot capability bound to the observed `frame_sha256`;
+- constrain that capability to the stable browser Production origin;
+- fetch the PNG and verify its SHA-256 equals the observed frame digest;
+- end the session even if screenshot verification fails;
+- reject any claim of visual QA PASS from the Action JSON descriptor alone; image inspection remains a separate gameplay-QA requirement.
 
 ## Failure behavior
 

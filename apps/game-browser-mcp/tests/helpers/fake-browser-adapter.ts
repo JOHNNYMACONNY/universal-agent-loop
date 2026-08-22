@@ -84,6 +84,11 @@ export class FakeBrowserAdapter implements BrowserAdapter {
 
   async observe(session: BrowserSessionRef): Promise<BrowserObservation> { return this.#observation(this.#entry(session)); }
 
+  async latestScreenshot(session: BrowserSessionRef): Promise<{ base64: string; mimeType: 'image/png' }> {
+    this.#entry(session);
+    return { base64: 'ZmFrZQ==', mimeType: 'image/png' };
+  }
+
   async input(session: BrowserSessionRef, batch: AcceptedActionBatch): Promise<BrowserBatchResult> {
     this.inputCalls += 1;
     const entry = this.#entry(session);
@@ -108,3 +113,4 @@ export class FakeBrowserAdapter implements BrowserAdapter {
   async end(session: BrowserSessionRef): Promise<void> { this.endCalls += 1; const entry = this.#sessions.get(session.sandboxId); if (entry) entry.alive = false; }
   loseSession(session: BrowserSessionRef): void { const entry = this.#sessions.get(session.sandboxId); if (entry) entry.alive = false; }
 }
+

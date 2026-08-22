@@ -535,6 +535,7 @@ jobs:
           set -euo pipefail
           candidate_sha="$1"
           action_url="$2"
+          browser_url="$3"
           if [ -z "${UAL_ACTION_API_KEY:-}" ]; then
             echo "::error::Vercel Production environment did not inject UAL_ACTION_API_KEY"
             exit 1
@@ -573,10 +574,23 @@ jobs:
             --data "$(jq -cn --arg session "$session_id" '{sessionId:$session}')")
           [ "$observe_status" = '200' ] || { echo "::error::Bridge observe failed (HTTP $observe_status)"; exit 1; }
           [ "$(jq -r '.session_id // empty' /tmp/bridge-observe.json)" = "$session_id" ] || { echo "::error::Bridge observe session mismatch"; exit 1; }
-          jq -e '.. | objects | select(has("screenshot")) | .screenshot | select(.available == true and .transported == false and .reason == "ACTION_IMAGE_TRANSPORT_NOT_IMPLEMENTED")' /tmp/bridge-observe.json >/dev/null || {
-            echo "::error::Bridge did not preserve explicit missing-image transport evidence"
-            exit 1
-          }
+          screenshot_url=$(jq -r '.. | objects | select(has("screenshot")) | .screenshot | select(.available == true and .transported == true and .mime_type == "image/png") | .screenshot_url // empty' /tmp/bridge-observe.json | head -n1)
+          frame_sha256=$(jq -r '.. | objects | select(has("screenshot")) | .screenshot | select(.available == true and .transported == true and .mime_type == "image/png") | .frame_sha256 // empty' /tmp/bridge-observe.json | head -n1)
+          [ -n "$screenshot_url" ] || { echo "::error::Bridge observe returned no signed screenshot URL"; exit 1; }
+          [[ "$frame_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::Bridge observe returned invalid screenshot frame digest"; exit 1; }
+          case "$screenshot_url" in
+            "$browser_url"/internal/gpt-action/screenshot\?*) ;;
+            *) echo "::error::Bridge screenshot URL escaped the stable browser origin"; exit 1 ;;
+          esac
+          echo "::add-mask::$screenshot_url"
+          image_meta=$(curl -sS -o /tmp/bridge-screenshot.png -w '%{http_code} %{content_type}' "$screenshot_url")
+          image_status=${image_meta%% *}
+          image_type=${image_meta#* }
+          [ "$image_status" = '200' ] || { echo "::error::Signed screenshot fetch failed (HTTP $image_status)"; exit 1; }
+          [ "$image_type" = 'image/png' ] || { echo "::error::Signed screenshot fetch returned unexpected content type"; exit 1; }
+          [ -s /tmp/bridge-screenshot.png ] || { echo "::error::Signed screenshot fetch returned an empty image"; exit 1; }
+          actual_frame_sha256=$(sha256sum /tmp/bridge-screenshot.png | awk '{print $1}')
+          [ "$actual_frame_sha256" = "$frame_sha256" ] || { echo "::error::Signed screenshot bytes did not match the observed frame digest"; exit 1; }
 
           end_status=$(curl -sS -o /tmp/bridge-end.json -w '%{http_code}' \
             -X POST "$action_url/game-browser/session-end" \
@@ -592,7 +606,7 @@ jobs:
           export VERCEL_PROJECT_ID="$ACTION_PROJECT_ID"
           npx -y vercel@59.1.4 env run --environment production \
             --token "$VERCEL_TOKEN" --scope "$VERCEL_TEAM_SLUG" -- \
-            /tmp/bridge-smoke.sh "$CANDIDATE_SHA" "$ACTION_PRODUCTION_URL"
+            /tmp/bridge-smoke.sh "$CANDIDATE_SHA" "$ACTION_PRODUCTION_URL" "$BROWSER_PRODUCTION_URL"
 
       - name: Record non-secret reconciliation evidence
         if: always()

@@ -46,9 +46,11 @@ export interface BrowserAdapter {
   start(input: BrowserStartInput): Promise<BrowserStartResult>;
   health(session: BrowserSessionRef): Promise<BrowserHealth>;
   observe(session: BrowserSessionRef): Promise<BrowserObservation>;
+  latestScreenshot(session: BrowserSessionRef): Promise<{ base64: string; mimeType: 'image/png' }>;
   input(session: BrowserSessionRef, batch: AcceptedActionBatch): Promise<BrowserBatchResult>;
   readState(session: BrowserSessionRef, path?: string): Promise<unknown>;
   reset(session: BrowserSessionRef): Promise<BrowserObservation>;
   releaseHeldInput(session: BrowserSessionRef): Promise<void>;
   end(session: BrowserSessionRef): Promise<void>;
 }
+

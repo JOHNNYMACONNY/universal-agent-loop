@@ -103,25 +103,23 @@ Discovery is read-only provider access and cannot create or redeploy a target.
 
 ## Browser Evidence Over Actions
 
-The MCP transport can return screenshots as native image content. GPT Actions are a JSON tool surface and must remain bounded.
+The MCP transport can return screenshots as native image content. GPT Actions remain a bounded JSON tool surface and must not place megabyte screenshot base64 bodies or runtime filesystem paths into Action responses.
 
-For this first slice, the Action bridge strips screenshot base64 bytes from observations before returning them to the GPT and replaces them with explicit transport metadata:
+The reviewed visual-evidence extension keeps screenshot bytes server-side and returns a short-lived HTTPS capability instead. When an observation contains a PNG at or below the 2 MB evidence limit, the Action projection:
 
-```json
-{
-  "screenshot": {
-    "available": true,
-    "transported": false,
-    "reason": "ACTION_IMAGE_TRANSPORT_NOT_IMPLEMENTED"
-  }
-}
-```
+1. decodes the already-captured screenshot bytes;
+2. computes `frame_sha256` over those exact bytes;
+3. creates a five-minute HMAC-SHA256 capability bound to the bridge session ID, exact frame digest, and expiry;
+4. removes the raw base64 and runtime path from the Action JSON;
+5. returns only bounded metadata plus `screenshot_url`, `frame_sha256`, and `expires_at`.
 
-All other bounded observation evidence remains available: URL, title, accessibility snapshot, console errors, failed requests, instrumentation, action/observation sequences, and exact deployment provenance.
+The URL points only to the configured browser-runtime origin at `/internal/gpt-action/screenshot`. It never accepts a caller-provided upstream URL, target URL, provider host, repository, filesystem path, shell command, JavaScript, or browser escape hatch. The HMAC uses the existing shared bridge token with a dedicated domain-separation label; the raw token is never returned.
 
-The canonical `game-browser-testing` policy must therefore treat screenshot/vision as a missing capability over this bridge when visual evidence is materially required. A canvas/WebGL visual criterion must not receive PASS solely from non-visual bridge evidence.
+The browser screenshot route validates the signed session/digest/expiry tuple before touching session state. It then reads the existing cached screenshot through the same bridge-owned session surface **without calling `observe` or incrementing observation/action sequences**, recomputes SHA-256, and serves `image/png` only if the cached bytes still match the signed frame digest. If the session has advanced and the cached frame changed, the old capability fails closed with `409 ACTION_REJECTED`; the caller must obtain a fresh observation instead of receiving mismatched evidence. Invalid, expired, malformed, or tampered capabilities fail before screenshot retrieval.
 
-A later reviewed slice may add safe ephemeral image transport. This slice must not smuggle megabyte base64 image bodies into GPT Action context or weaken the evidence contract to pretend vision exists.
+Successful image responses are `private, no-store, max-age=0` and `nosniff`. Action JSON still labels target-derived content as `UNTRUSTED_TARGET_CONTENT`, and the image itself remains untrusted game evidence rather than instructions or outer-loop authority.
+
+A visual criterion may receive PASS only after the signed URL is actually fetched and the returned image is inspected as part of the canonical sense → act → verify loop. The JSON descriptor or URL alone is not visual proof. If the capability cannot be fetched or the exact frame is no longer available, visual QA remains capability-blocked until a fresh frame is obtained.
 
 ## Action Proxy Configuration
 
@@ -154,7 +152,8 @@ The Action API:
 The browser runtime bridge:
 
 - exposes no shell, arbitrary JavaScript, Playwright/CDP passthrough, navigation URL, generic selector mutation, credential entry, repository mutation, deployment, release, settings, billing, or target-registration bypass;
-- routes only to the existing six reviewed game tool services;
+- routes normal control traffic only to the existing six game services;
+- the signed screenshot capability reads only the already-captured cached frame, rejects tampering/expiry/frame drift, and does not weaken bearer protection on normal routes;
 - derives target/deployment policy from server configuration and verified provider metadata.
 
 ## Error Contract
@@ -180,7 +179,8 @@ Root tests must prove:
 - invalid/missing Action bridge config fails closed;
 - the proxy never accepts arbitrary upstream URLs/paths;
 - bridge token is used upstream and the incoming Action key is not forwarded;
-- screenshot base64 is removed and explicit missing-image transport metadata is returned;
+- screenshot base64/runtime paths are removed and replaced with a bounded signed URL tied to the exact frame digest;
+- oversized screenshots do not receive a capability;
 - upstream secret/error bodies are not leaked.
 
 Game-browser package tests must prove:
@@ -188,7 +188,8 @@ Game-browser package tests must prove:
 - bridge is disabled without its dedicated token;
 - missing/wrong bridge bearer is rejected;
 - stable binding owns sessions across separate bridge calls;
-- bridge routes only to the existing six game services;
+- bridge routes normal control traffic only to the existing six game services;
+- the signed screenshot capability reads only the already-captured cached frame, rejects tampering/expiry/frame drift, and does not weaken bearer protection on normal routes;
 - deployment discovery is limited to the configured project/repository and exact commit;
 - discovered deployment is re-verified through the existing provenance verifier;
 - no match returns `STALE_DEPLOYMENT`;
@@ -198,4 +199,4 @@ Game-browser package tests must prove:
 
 Code/CI/review completion of this slice does not equal full visual `CHATGPT_LOOP_READY`.
 
-After merge, Production activation additionally requires separately authorized server-side environment configuration for both Vercel projects, redeployment, Custom GPT schema refresh, and a real ChatGPT-originated bridge run. The run may prove remote session/input/state capability, but visual-only QA remains `BLOCKED_CAPABILITY` until image evidence is safely transported to the GPT.
+After merge, Production activation additionally requires the existing authorized runtime reconciliation for both Vercel projects and a real bridge run. Visual-only QA remains `BLOCKED_CAPABILITY` unless the run obtains a signed frame capability, fetches the exact digest-matching PNG, and actually inspects that image. The signed descriptor alone is never sufficient evidence.

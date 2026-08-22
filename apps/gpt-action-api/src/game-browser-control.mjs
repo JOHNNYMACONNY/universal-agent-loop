@@ -1,6 +1,10 @@
+import { createHash, createHmac } from 'node:crypto';
+
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_UPSTREAM_BYTES = 4 * 1024 * 1024;
 const MAX_ERROR_MESSAGE = 1024;
+const MAX_SCREENSHOT_BYTES = 2_000_000;
+const SCREENSHOT_LINK_TTL_MS = 5 * 60_000;
 
 function objectValue(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
@@ -152,27 +156,62 @@ function encodeTranslatedBody(value) {
   }
 }
 
-function screenshotDescriptor(value) {
+function screenshotLinkSignature(token, sessionId, frameSha256, expiresAtMs) {
+  return createHmac('sha256', token)
+    .update(`ual:game-browser-screenshot-link:v1\n${sessionId}\n${frameSha256}\n${expiresAtMs}`, 'utf8')
+    .digest('hex');
+}
+
+function responseSessionId(value) {
+  const root = objectValue(value);
+  const observation = objectValue(root?.observation);
+  const candidate = typeof root?.session_id === 'string' ? root.session_id : observation?.session_id;
+  return typeof candidate === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(candidate) ? candidate : undefined;
+}
+
+function screenshotDescriptor(value, context) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const base64 = typeof value.base64 === 'string' ? value.base64 : undefined;
+  let decoded;
   let bytes;
   if (base64 !== undefined) {
-    try { bytes = Buffer.from(base64, 'base64').byteLength; } catch { bytes = 0; }
+    try { decoded = Buffer.from(base64, 'base64'); bytes = decoded.byteLength; } catch { bytes = 0; }
   }
+  if (!base64 || !decoded || !context.sessionId || !bytes || bytes > MAX_SCREENSHOT_BYTES) {
+    return {
+      available: true,
+      transported: false,
+      reason: bytes && bytes > MAX_SCREENSHOT_BYTES ? 'SCREENSHOT_TOO_LARGE' : 'SCREENSHOT_LINK_UNAVAILABLE',
+      ...(bytes === undefined ? {} : { bytes }),
+    };
+  }
+
+  const frameSha256 = createHash('sha256').update(decoded).digest('hex');
+  const expiresAtMs = context.nowMs + SCREENSHOT_LINK_TTL_MS;
+  const params = new URLSearchParams({
+    session_id: context.sessionId,
+    frame_sha256: frameSha256,
+    expires: String(expiresAtMs),
+    sig: screenshotLinkSignature(context.config.token, context.sessionId, frameSha256, expiresAtMs),
+  });
   return {
     available: true,
-    transported: false,
-    reason: 'ACTION_IMAGE_TRANSPORT_NOT_IMPLEMENTED',
-    ...(bytes === undefined ? {} : { bytes }),
+    transported: true,
+    mime_type: 'image/png',
+    content_trust: 'UNTRUSTED_TARGET_CONTENT',
+    bytes,
+    frame_sha256: frameSha256,
+    screenshot_url: `${context.config.origin}/internal/gpt-action/screenshot?${params.toString()}`,
+    expires_at: new Date(expiresAtMs).toISOString(),
   };
 }
 
-function projectEvidence(value) {
-  if (Array.isArray(value)) return value.map(projectEvidence);
+function projectEvidence(value, context) {
+  if (Array.isArray(value)) return value.map((child) => projectEvidence(child, context));
   if (!value || typeof value !== 'object') return value;
   const projected = {};
   for (const [key, child] of Object.entries(value)) {
-    projected[key] = key === 'screenshot' ? screenshotDescriptor(child) : projectEvidence(child);
+    projected[key] = key === 'screenshot' ? screenshotDescriptor(child, context) : projectEvidence(child, context);
   }
   return projected;
 }
@@ -241,7 +280,11 @@ export async function handleGameBrowserControlRequest(request, { env = process.e
       ?? result(502, { error: 'GAME_BROWSER_UPSTREAM_ERROR', status: upstream.status });
   }
 
-  return result(upstream.status, projectEvidence(payload));
+  return result(upstream.status, projectEvidence(payload, {
+    config,
+    sessionId: responseSessionId(payload),
+    nowMs: Date.now(),
+  }));
 }
 
 function actionOperation(operationId, summary, schemaRef, security) {
@@ -349,3 +392,5 @@ export const gameBrowserOpenApiSchemas = {
   },
   GameQaResult: { type: 'object', additionalProperties: true },
 };
+
+

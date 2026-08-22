@@ -187,6 +187,14 @@ export class VercelSandboxBrowser implements BrowserAdapter {
     return asObservation(payload.observation);
   }
 
+  async latestScreenshot(session: BrowserSessionRef): Promise<{ base64: string; mimeType: 'image/png' }> {
+    const handle = await this.#factory.get(session.sandboxId);
+    const payload = await this.#worker(handle, { type: 'screenshot_latest', session_id: session.logicalSessionId });
+    const base64 = payload?.screenshot?.base64;
+    if (typeof base64 !== 'string' || base64.length === 0) throw new Error('latest screenshot unavailable');
+    return { base64, mimeType: 'image/png' };
+  }
+
   async input(session: BrowserSessionRef, batch: AcceptedActionBatch): Promise<BrowserBatchResult> {
     const handle = await this.#factory.get(session.sandboxId);
     const payload = await this.#worker(handle, {
@@ -231,3 +239,4 @@ export class VercelSandboxBrowser implements BrowserAdapter {
     try { await handle.delete(); } catch {}
   }
 }
+

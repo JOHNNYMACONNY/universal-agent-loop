@@ -133,9 +133,11 @@ test('session start translates the public camelCase contract only to the fixed r
   });
 
   assert.equal(response.body.observation.screenshot.available, true);
-  assert.equal(response.body.observation.screenshot.transported, false);
-  assert.equal(response.body.observation.screenshot.reason, 'ACTION_IMAGE_TRANSPORT_NOT_IMPLEMENTED');
+  assert.equal(response.body.observation.screenshot.transported, true);
+  assert.equal(response.body.observation.screenshot.mime_type, 'image/png');
   assert.equal(response.body.observation.screenshot.bytes, 5);
+  assert.match(response.body.observation.screenshot.screenshot_url, /^https:\/\/browser\.example\.test\/internal\/gpt-action\/screenshot\?/);
+  assert.match(response.body.observation.screenshot.expires_at, /^\d{4}-\d{2}-\d{2}T/);
   assert.equal('base64' in response.body.observation.screenshot, false);
   assert.equal(JSON.stringify(response.body).includes('/tmp/frame.png'), false);
 });
@@ -216,3 +218,4 @@ test('bounded runtime errors may pass through but upstream secret/error bodies n
   assert.equal(JSON.stringify(failed.body).includes('bridge-secret-value'), false);
   assert.equal(JSON.stringify(failed.body).includes('provider-token-123'), false);
 });
+

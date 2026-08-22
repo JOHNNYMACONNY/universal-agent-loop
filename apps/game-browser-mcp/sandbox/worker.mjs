@@ -208,6 +208,16 @@ function dispatch() {
     output({ observation: observe(ledger) });
     return;
   }
+  if (request.type === 'screenshot_latest') {
+    const shotPath = `${root}/${session}-latest.png`;
+    try {
+      const bytes = readFileSync(shotPath);
+      output({ screenshot: { base64: bytes.toString('base64'), mimeType: 'image/png' } });
+    } catch {
+      throw workerError('CAPABILITY_UNAVAILABLE', 'latest screenshot unavailable');
+    }
+    return;
+  }
   if (request.type === 'input') {
     const id = request.action_batch_id;
     const prior = ledger.browserBatches[id];
@@ -388,3 +398,4 @@ catch (error) {
   process.stdout.write(JSON.stringify({ ok: false, error: code, detail }));
   process.exitCode = 1;
 }
+
