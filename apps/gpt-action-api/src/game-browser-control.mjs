@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_UPSTREAM_BYTES = 4 * 1024 * 1024;
@@ -156,9 +156,9 @@ function encodeTranslatedBody(value) {
   }
 }
 
-function screenshotLinkSignature(token, sessionId, expiresAtMs) {
+function screenshotLinkSignature(token, sessionId, frameSha256, expiresAtMs) {
   return createHmac('sha256', token)
-    .update(`ual:game-browser-screenshot-link:v1\n${sessionId}\n${expiresAtMs}`, 'utf8')
+    .update(`ual:game-browser-screenshot-link:v1\n${sessionId}\n${frameSha256}\n${expiresAtMs}`, 'utf8')
     .digest('hex');
 }
 
@@ -172,11 +172,12 @@ function responseSessionId(value) {
 function screenshotDescriptor(value, context) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const base64 = typeof value.base64 === 'string' ? value.base64 : undefined;
+  let decoded;
   let bytes;
   if (base64 !== undefined) {
-    try { bytes = Buffer.from(base64, 'base64').byteLength; } catch { bytes = 0; }
+    try { decoded = Buffer.from(base64, 'base64'); bytes = decoded.byteLength; } catch { bytes = 0; }
   }
-  if (!base64 || !context.sessionId || !bytes || bytes > MAX_SCREENSHOT_BYTES) {
+  if (!base64 || !decoded || !context.sessionId || !bytes || bytes > MAX_SCREENSHOT_BYTES) {
     return {
       available: true,
       transported: false,
@@ -185,11 +186,13 @@ function screenshotDescriptor(value, context) {
     };
   }
 
+  const frameSha256 = createHash('sha256').update(decoded).digest('hex');
   const expiresAtMs = context.nowMs + SCREENSHOT_LINK_TTL_MS;
   const params = new URLSearchParams({
     session_id: context.sessionId,
+    frame_sha256: frameSha256,
     expires: String(expiresAtMs),
-    sig: screenshotLinkSignature(context.config.token, context.sessionId, expiresAtMs),
+    sig: screenshotLinkSignature(context.config.token, context.sessionId, frameSha256, expiresAtMs),
   });
   return {
     available: true,
@@ -197,6 +200,7 @@ function screenshotDescriptor(value, context) {
     mime_type: 'image/png',
     content_trust: 'UNTRUSTED_TARGET_CONTENT',
     bytes,
+    frame_sha256: frameSha256,
     screenshot_url: `${context.config.origin}/internal/gpt-action/screenshot?${params.toString()}`,
     expires_at: new Date(expiresAtMs).toISOString(),
   };
@@ -388,4 +392,5 @@ export const gameBrowserOpenApiSchemas = {
   },
   GameQaResult: { type: 'object', additionalProperties: true },
 };
+
 
