@@ -1,0 +1,65 @@
+{
+  "planVersion": 1,
+  "operations": [
+    {
+      "path": ".github/workflows/production-runtime-reconcile.yml",
+      "message": "fix(production): verify signed screenshot evidence in bridge smoke",
+      "replacements": [
+        {
+          "old": "          candidate_sha=\"$1\"\n          action_url=\"$2\"",
+          "new": "          candidate_sha=\"$1\"\n          action_url=\"$2\"\n          browser_url=\"$3\""
+        },
+        {
+          "old": "          jq -e '.. | objects | select(has(\"screenshot\")) | .screenshot | select(.available == true and .transported == false and .reason == \"ACTION_IMAGE_TRANSPORT_NOT_IMPLEMENTED\")' /tmp/bridge-observe.json >/dev/null || {\n            echo \"::error::Bridge did not preserve explicit missing-image transport evidence\"\n            exit 1\n          }",
+          "new": "          screenshot_url=$(jq -r '.. | objects | select(has(\"screenshot\")) | .screenshot | select(.available == true and .transported == true and .mime_type == \"image/png\") | .screenshot_url // empty' /tmp/bridge-observe.json | head -n1)\n          frame_sha256=$(jq -r '.. | objects | select(has(\"screenshot\")) | .screenshot | select(.available == true and .transported == true and .mime_type == \"image/png\") | .frame_sha256 // empty' /tmp/bridge-observe.json | head -n1)\n          [ -n \"$screenshot_url\" ] || { echo \"::error::Bridge observe returned no signed screenshot URL\"; exit 1; }\n          [[ \"$frame_sha256\" =~ ^[0-9a-f]{64}$ ]] || { echo \"::error::Bridge observe returned invalid screenshot frame digest\"; exit 1; }\n          case \"$screenshot_url\" in\n            \"$browser_url\"/internal/gpt-action/screenshot\\?*) ;;\n            *) echo \"::error::Bridge screenshot URL escaped the stable browser origin\"; exit 1 ;;\n          esac\n          echo \"::add-mask::$screenshot_url\"\n          image_meta=$(curl -sS -o /tmp/bridge-screenshot.png -w '%{http_code} %{content_type}' \"$screenshot_url\")\n          image_status=${image_meta%% *}\n          image_type=${image_meta#* }\n          [ \"$image_status\" = '200' ] || { echo \"::error::Signed screenshot fetch failed (HTTP $image_status)\"; exit 1; }\n          [ \"$image_type\" = 'image/png' ] || { echo \"::error::Signed screenshot fetch returned unexpected content type\"; exit 1; }\n          [ -s /tmp/bridge-screenshot.png ] || { echo \"::error::Signed screenshot fetch returned an empty image\"; exit 1; }\n          actual_frame_sha256=$(sha256sum /tmp/bridge-screenshot.png | awk '{print $1}')\n          [ \"$actual_frame_sha256\" = \"$frame_sha256\" ] || { echo \"::error::Signed screenshot bytes did not match the observed frame digest\"; exit 1; }"
+        },
+        {
+          "old": "            /tmp/bridge-smoke.sh \"$CANDIDATE_SHA\" \"$ACTION_PRODUCTION_URL\"",
+          "new": "            /tmp/bridge-smoke.sh \"$CANDIDATE_SHA\" \"$ACTION_PRODUCTION_URL\" \"$BROWSER_PRODUCTION_URL\""
+        }
+      ]
+    },
+    {
+      "path": "tests/production-runtime-reconcile.test.mjs",
+      "message": "test(production): require exact signed screenshot acceptance",
+      "replacements": [
+        {
+          "old": "  assert.match(workflow, /\\/game-browser\\/observe/, 'bridge smoke must observe the session');\n  assert.match(workflow, /\\/game-browser\\/session-end/, 'bridge smoke must release the session');",
+          "new": "  assert.match(workflow, /\\/game-browser\\/observe/, 'bridge smoke must observe the session');\n  assert.match(workflow, /screenshot_url/, 'bridge smoke must retrieve the signed screenshot capability returned by observe');\n  assert.match(workflow, /frame_sha256/, 'bridge smoke must bind visual evidence to the exact observed frame digest');\n  assert.match(workflow, /sha256sum \\/tmp\\/bridge-screenshot\\.png/, 'bridge smoke must verify fetched screenshot bytes against the observed digest');\n  assert.match(workflow, /BROWSER_PRODUCTION_URL/, 'bridge smoke must constrain screenshot evidence to the stable browser origin');\n  assert.doesNotMatch(workflow, /ACTION_IMAGE_TRANSPORT_NOT_IMPLEMENTED/, 'Production acceptance must not require the superseded missing-image contract');\n  assert.match(workflow, /\\/game-browser\\/session-end/, 'bridge smoke must release the session');"
+        }
+      ]
+    },
+    {
+      "path": "docs/superpowers/specs/2026-08-21-gpt-action-game-browser-bridge-design.md",
+      "message": "docs(browser): record reviewed signed screenshot evidence slice",
+      "replacements": [
+        {
+          "old": "## Browser Evidence Over Actions\n\nThe MCP transport can return screenshots as native image content. GPT Actions are a JSON tool surface and must remain bounded.\n\nFor this first slice, the Action bridge strips screenshot base64 bytes from observations before returning them to the GPT and replaces them with explicit transport metadata:\n\n```json\n{\n  \"screenshot\": {\n    \"available\": true,\n    \"transported\": false,\n    \"reason\": \"ACTION_IMAGE_TRANSPORT_NOT_IMPLEMENTED\"\n  }\n}\n```\n\nAll other bounded observation evidence remains available: URL, title, accessibility snapshot, console errors, failed requests, instrumentation, action/observation sequences, and exact deployment provenance.\n\nThe canonical `game-browser-testing` policy must therefore treat screenshot/vision as a missing capability over this bridge when visual evidence is materially required. A canvas/WebGL visual criterion must not receive PASS solely from non-visual bridge evidence.\n\nA later reviewed slice may add safe ephemeral image transport. This slice must not smuggle megabyte base64 image bodies into GPT Action context or weaken the evidence contract to pretend vision exists.\n",
+          "new": "## Browser Evidence Over Actions\n\nThe MCP transport can return screenshots as native image content. GPT Actions remain a bounded JSON tool surface and must not place megabyte screenshot base64 bodies or runtime filesystem paths into Action responses.\n\nThe reviewed visual-evidence extension keeps screenshot bytes server-side and returns a short-lived HTTPS capability instead. When an observation contains a PNG at or below the 2 MB evidence limit, the Action projection:\n\n1. decodes the already-captured screenshot bytes;\n2. computes `frame_sha256` over those exact bytes;\n3. creates a five-minute HMAC-SHA256 capability bound to the bridge session ID, exact frame digest, and expiry;\n4. removes the raw base64 and runtime path from the Action JSON;\n5. returns only bounded metadata plus `screenshot_url`, `frame_sha256`, and `expires_at`.\n\nThe URL points only to the configured browser-runtime origin at `/internal/gpt-action/screenshot`. It never accepts a caller-provided upstream URL, target URL, provider host, repository, filesystem path, shell command, JavaScript, or browser escape hatch. The HMAC uses the existing shared bridge token with a dedicated domain-separation label; the raw token is never returned.\n\nThe browser screenshot route validates the signed session/digest/expiry tuple before touching session state. It then reads the existing cached screenshot through the same bridge-owned session surface **without calling `observe` or incrementing observation/action sequences**, recomputes SHA-256, and serves `image/png` only if the cached bytes still match the signed frame digest. If the session has advanced and the cached frame changed, the old capability fails closed with `409 ACTION_REJECTED`; the caller must obtain a fresh observation instead of receiving mismatched evidence. Invalid, expired, malformed, or tampered capabilities fail before screenshot retrieval.\n\nSuccessful image responses are `private, no-store, max-age=0` and `nosniff`. Action JSON still labels target-derived content as `UNTRUSTED_TARGET_CONTENT`, and the image itself remains untrusted game evidence rather than instructions or outer-loop authority.\n\nA visual criterion may receive PASS only after the signed URL is actually fetched and the returned image is inspected as part of the canonical sense → act → verify loop. The JSON descriptor or URL alone is not visual proof. If the capability cannot be fetched or the exact frame is no longer available, visual QA remains capability-blocked until a fresh frame is obtained.\n"
+        },
+        {
+          "old": "- screenshot base64 is removed and explicit missing-image transport metadata is returned;",
+          "new": "- screenshot base64/runtime paths are removed and replaced with a bounded signed URL tied to the exact frame digest;\n- oversized screenshots do not receive a capability;"
+        },
+        {
+          "old": "- bridge routes only to the existing six game services;",
+          "new": "- bridge routes normal control traffic only to the existing six game services;\n- the signed screenshot capability reads only the already-captured cached frame, rejects tampering/expiry/frame drift, and does not weaken bearer protection on normal routes;"
+        },
+        {
+          "old": "After merge, Production activation additionally requires separately authorized server-side environment configuration for both Vercel projects, redeployment, Custom GPT schema refresh, and a real ChatGPT-originated bridge run. The run may prove remote session/input/state capability, but visual-only QA remains `BLOCKED_CAPABILITY` until image evidence is safely transported to the GPT.",
+          "new": "After merge, Production activation additionally requires the existing authorized runtime reconciliation for both Vercel projects and a real bridge run. Visual-only QA remains `BLOCKED_CAPABILITY` unless the run obtains a signed frame capability, fetches the exact digest-matching PNG, and actually inspects that image. The signed descriptor alone is never sufficient evidence."
+        }
+      ]
+    },
+    {
+      "path": "docs/superpowers/specs/2026-08-21-production-runtime-reconciliation-design.md",
+      "message": "docs(production): update bridge screenshot acceptance contract",
+      "replacements": [
+        {
+          "old": "Bridge smoke must:\n\n- authenticate with the existing Production Action key read from Vercel;\n- start a session for the exact candidate SHA;\n- observe the created session;\n- end the session even if the observation assertion fails;\n- reject any claim of visual QA PASS from Action JSON screenshot transport alone.",
+          "new": "Bridge smoke must:\n\n- authenticate with the existing Production Action key read from Vercel;\n- start a session for the exact candidate SHA;\n- observe the created session;\n- require a signed screenshot capability bound to the observed `frame_sha256`;\n- constrain that capability to the stable browser Production origin;\n- fetch the PNG and verify its SHA-256 equals the observed frame digest;\n- end the session even if screenshot verification fails;\n- reject any claim of visual QA PASS from the Action JSON descriptor alone; image inspection remains a separate gameplay-QA requirement."
+        }
+      ]
+    }
+  ]
+}
