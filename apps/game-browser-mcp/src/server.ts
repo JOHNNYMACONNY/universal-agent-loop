@@ -8,6 +8,7 @@ import { SignedBearerPrincipalResolver, StaticPrincipalResolver, type PrincipalR
 import { VercelSandboxBrowser } from './browser/vercel-sandbox-browser.js';
 import { createGptActionBridgeRouter, deriveGptActionBridgeBinding } from './bridge/gpt-action-bridge.js';
 import { loadRuntimeConfig } from './env.js';
+import { RuntimeError } from './errors.js';
 import { createGameMcpHandler, type GameToolSurface } from './mcp.js';
 import { CapabilityRegistrationStore, RegistrationCapabilityCodec } from './provenance/registration-capability.js';
 import { RegistrationService } from './provenance/registration-service.js';
@@ -151,8 +152,9 @@ export function createProductionRuntimeApp(env: Record<string, string | undefine
   });
 
   const bridgeToken = env.GPT_ACTION_BRIDGE_TOKEN?.trim();
-  const bridgeSurface = bridgeToken
-    ? createSurface(new StaticPrincipalResolver(deriveGptActionBridgeBinding(bridgeToken)))
+  const bridgeBinding = bridgeToken ? deriveGptActionBridgeBinding(bridgeToken) : undefined;
+  const bridgeSurface = bridgeBinding
+    ? createSurface(new StaticPrincipalResolver(bridgeBinding))
     : undefined;
   const registerForCommit = bridgeToken
     ? async (expectedCommitSha: string) => {
@@ -167,10 +169,23 @@ export function createProductionRuntimeApp(env: Record<string, string | undefine
       });
     }
     : undefined;
+  const readScreenshot = bridgeBinding
+    ? async (sessionId: string) => {
+      const record = await sessions.get(sessionId);
+      if (!record) throw new RuntimeError('SESSION_NOT_FOUND', 'session not found');
+      if (record.owner_binding !== bridgeBinding) throw new RuntimeError('AUTH_CONTEXT_UNAVAILABLE', 'session ownership mismatch');
+      const nowMs = Date.now();
+      if (new Date(record.absolute_expires_at).getTime() <= nowMs || new Date(record.idle_expires_at).getTime() <= nowMs) {
+        throw new RuntimeError('SESSION_EXPIRED', 'session idle/absolute lifetime expired');
+      }
+      return browser.latestScreenshot({ logicalSessionId: record.session_id, sandboxId: record.sandbox_id });
+    }
+    : undefined;
   const gptActionBridgeHandler = createGptActionBridgeRouter({
     token: bridgeToken,
     surface: bridgeSurface,
     registerForCommit,
+    readScreenshot,
   });
 
   return createRuntimeApp(servicesFactory, {

@@ -22,10 +22,16 @@ interface GameBridgeSurface extends GameToolSurface {
   latestScreenshot(input: unknown): Promise<unknown>;
 }
 
+interface CachedScreenshot {
+  base64: string;
+  mimeType: 'image/png';
+}
+
 export interface GptActionBridgeOptions {
   token?: string | undefined;
   surface?: GameBridgeSurface | undefined;
   registerForCommit?: ((expectedCommitSha: string) => Promise<RegistrationRef>) | undefined;
+  readScreenshot?: ((sessionId: string) => Promise<CachedScreenshot>) | undefined;
 }
 
 function bearerToken(value: string | undefined): string {
@@ -93,7 +99,7 @@ export function createGptActionBridgeRouter(options: GptActionBridgeOptions) {
 
   router.get('/screenshot', async (req, res) => {
     const configured = options.token?.trim();
-    if (!configured || !options.surface) {
+    if (!configured || !options.readScreenshot) {
       res.status(503).json({ error: 'BRIDGE_CONFIGURATION_ERROR' });
       return;
     }
@@ -119,14 +125,11 @@ export function createGptActionBridgeRouter(options: GptActionBridgeOptions) {
     }
 
     try {
-      const value = await options.surface.latestScreenshot({ session_id: sessionId }) as {
-        screenshot?: { base64?: unknown; mime_type?: unknown; bytes?: unknown };
-      };
-      const base64 = value?.screenshot?.base64;
-      if (typeof base64 !== 'string' || value?.screenshot?.mime_type !== 'image/png') {
+      const screenshot = await options.readScreenshot(sessionId);
+      if (typeof screenshot.base64 !== 'string' || screenshot.mimeType !== 'image/png') {
         throw new RuntimeError('CAPABILITY_UNAVAILABLE', 'cached screenshot unavailable');
       }
-      const bytes = Buffer.from(base64, 'base64');
+      const bytes = Buffer.from(screenshot.base64, 'base64');
       if (bytes.byteLength === 0 || bytes.byteLength > MAX_SCREENSHOT_BYTES) {
         throw new RuntimeError('LIMIT_EXCEEDED', 'screenshot exceeds 2 MB evidence limit');
       }
@@ -192,5 +195,3 @@ export function createGptActionBridgeRouter(options: GptActionBridgeOptions) {
 
   return router;
 }
-
-
