@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { createServer } from 'node:http';
 import test from 'node:test';
 
@@ -63,7 +64,7 @@ async function withServer(
   }
 }
 
-function fakeSurface(calls: Array<{ name: string; input: unknown }>): GameToolSurface {
+function fakeSurface(calls: Array<{ name: string; input: unknown }>): GameToolSurface & { latestScreenshot(input: unknown): Promise<unknown> } {
   const invoke = (name: string) => async (input: unknown) => {
     calls.push({ name, input });
     return { ok: true, name, input };
@@ -72,6 +73,7 @@ function fakeSurface(calls: Array<{ name: string; input: unknown }>): GameToolSu
     sessionStart: invoke('sessionStart'),
     observe: invoke('observe'),
     input: invoke('input'),
+    latestScreenshot: invoke('latestScreenshot'),
     readState: invoke('readState'),
     reset: invoke('reset'),
     sessionEnd: invoke('sessionEnd'),
@@ -235,3 +237,58 @@ test('bridge exposes only the six fixed game-QA routes and forwards no arbitrary
     assert.equal(calls.length, before);
   });
 });
+
+test('signed screenshot capability serves only the cached PNG and rejects tampering without weakening bearer routes', async () => {
+  const calls: Array<{ name: string; input: unknown }> = [];
+  const surface = {
+    ...fakeSurface(calls),
+    latestScreenshot: async (input: unknown) => {
+      calls.push({ name: 'latestScreenshot', input });
+      return { screenshot: { base64: Buffer.from('cached-frame').toString('base64'), mime_type: 'image/png', bytes: 12 } };
+    },
+  };
+
+  await withServer({
+    token: TOKEN,
+    surface,
+    registerForCommit: async () => ({ target_registration_id: 'rgc1.registration' }),
+  }, async (baseUrl) => {
+    const expires = Date.now() + 60_000;
+    const signature = createHmac('sha256', TOKEN)
+      .update(`ual:game-browser-screenshot-link:v1\nsession_123\n${expires}`, 'utf8')
+      .digest('hex');
+    const url = `${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&expires=${expires}&sig=${signature}`;
+
+    const image = await fetch(url);
+    assert.equal(image.status, 200);
+    assert.equal(image.headers.get('content-type'), 'image/png');
+    assert.equal(image.headers.get('cache-control'), 'private, no-store, max-age=0');
+    assert.equal(image.headers.get('x-content-type-options'), 'nosniff');
+    assert.deepEqual(Buffer.from(await image.arrayBuffer()), Buffer.from('cached-frame'));
+    assert.deepEqual(calls.filter((call) => call.name === 'latestScreenshot'), [
+      { name: 'latestScreenshot', input: { session_id: 'session_123' } },
+    ]);
+
+    const before = calls.length;
+    const tampered = await fetch(`${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&expires=${expires}&sig=${'0'.repeat(64)}`);
+    assert.equal(tampered.status, 403);
+    assert.deepEqual(await tampered.json(), { error: 'INVALID_SCREENSHOT_LINK' });
+    assert.equal(calls.length, before);
+
+    const expired = Date.now() - 1;
+    const expiredSignature = createHmac('sha256', TOKEN)
+      .update(`ual:game-browser-screenshot-link:v1\nsession_123\n${expired}`, 'utf8')
+      .digest('hex');
+    const expiredResponse = await fetch(`${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&expires=${expired}&sig=${expiredSignature}`);
+    assert.equal(expiredResponse.status, 403);
+    assert.equal(calls.length, before);
+
+    const bearerStillRequired = await fetch(`${baseUrl}/internal/gpt-action/observe`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session_id: 'session_123' }),
+    });
+    assert.equal(bearerStillRequired.status, 401);
+  });
+});
+
