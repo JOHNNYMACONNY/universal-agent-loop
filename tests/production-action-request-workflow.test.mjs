@@ -28,6 +28,17 @@ test('relay keeps credentials server-side and uses the stable Production Action'
   assert.match(text, /::add-mask::\$action_key/);
 });
 
+test('public issue request carries only an immutable target-repo plan pointer', () => {
+  const text = workflow();
+  assert.match(text, /REQUEST_MAX_BYTES: '4096'/);
+  assert.match(text, /PLAN_MAX_BYTES: '60000'/);
+  assert.match(text, /planRef/);
+  assert.match(text, /planBlobSha/);
+  assert.match(text, /\.ual\/action-requests\//);
+  assert.match(text, /\/tmp\/plan\.json/);
+  assert.doesNotMatch(text, /\.operations \| length.*\/tmp\/request\.json/);
+});
+
 test('relay pins exact PR head and only writes guarded chatgpt branches through the Action', () => {
   const text = workflow();
   assert.match(text, /\/github\/pull-request/);
@@ -41,9 +52,8 @@ test('relay pins exact PR head and only writes guarded chatgpt branches through 
   assert.doesNotMatch(text, /repos\/\$.*\/git\/refs/);
 });
 
-test('relay bounds request size and replacement cardinality', () => {
+test('target-repo plan bounds replacement cardinality and duplicate paths', () => {
   const text = workflow();
-  assert.match(text, /REQUEST_MAX_BYTES: '60000'/);
   assert.match(text, /\.operations \| type == "array" and length >= 1 and length <= 4/);
   assert.match(text, /\.replacements \| type == "array" and length >= 1 and length <= 8/);
   assert.match(text, /\.old \| type == "string" and length >= 1/);
