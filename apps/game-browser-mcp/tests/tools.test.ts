@@ -51,6 +51,21 @@ test('session start binds exact commit provenance and persists only after browse
   assert.equal((await sessions.get('session_1'))?.owner_binding, 'principal-binding-123456');
 });
 
+test('latest screenshot returns cached untrusted evidence without advancing action or observation sequence', async () => {
+  const { services, sessions } = await setup();
+  await services.sessionStart({ target_registration_id: 'reg_1', expected_commit_sha: SHA });
+  const before = await sessions.get('session_1');
+  const result = await services.latestScreenshot({ session_id: 'session_1' });
+  const after = await sessions.get('session_1');
+
+  assert.equal(result.content_trust, 'UNTRUSTED_TARGET_CONTENT');
+  assert.equal(result.screenshot.mime_type, 'image/png');
+  assert.equal(result.screenshot.base64, 'ZmFrZQ==');
+  assert.equal(result.screenshot.bytes, 4);
+  assert.equal(after?.action_seq, before?.action_seq);
+  assert.equal(after?.observation_seq, before?.observation_seq);
+});
+
 test('start rejects stale commit and expired registration before browser work', async () => {
   const { services, browser } = await setup();
   await assert.rejects(
@@ -95,7 +110,7 @@ test('ambiguous browser execution marks session recovery-required and releases h
   assert.equal((browser as any).releaseCalls, 1);
 });
 
-test('ownership mismatch rejects observe/input/read/reset/end', async () => {
+test('ownership mismatch rejects observe/input/screenshot/read/reset/end', async () => {
   const first = await setup({ principal: 'principal-binding-123456' });
   await first.services.sessionStart({ target_registration_id: 'reg_1', expected_commit_sha: SHA });
   const attacker = createGameToolServices({
@@ -108,6 +123,7 @@ test('ownership mismatch rejects observe/input/read/reset/end', async () => {
   for (const call of [
     () => attacker.observe({ session_id: 'session_1' }),
     () => attacker.input({ session_id: 'session_1', action_batch_id: 'b', expected_action_seq: 0, actions: [{ type: 'press' as const, key: 'Enter' as const }] }),
+    () => attacker.latestScreenshot({ session_id: 'session_1' }),
     () => attacker.readState({ session_id: 'session_1' }),
     () => attacker.reset({ session_id: 'session_1' }),
     () => attacker.sessionEnd({ session_id: 'session_1' }),
