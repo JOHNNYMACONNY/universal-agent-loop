@@ -48,9 +48,9 @@ export function deriveGptActionBridgeBinding(token: string): string {
 const SCREENSHOT_LINK_TTL_MS = 5 * 60_000;
 const MAX_SCREENSHOT_BYTES = 2_000_000;
 
-function screenshotLinkSignature(token: string, sessionId: string, expiresAtMs: number): string {
+function screenshotLinkSignature(token: string, sessionId: string, frameSha256: string, expiresAtMs: number): string {
   return createHmac('sha256', token)
-    .update(`ual:game-browser-screenshot-link:v1\n${sessionId}\n${expiresAtMs}`, 'utf8')
+    .update(`ual:game-browser-screenshot-link:v1\n${sessionId}\n${frameSha256}\n${expiresAtMs}`, 'utf8')
     .digest('hex');
 }
 
@@ -99,14 +99,16 @@ export function createGptActionBridgeRouter(options: GptActionBridgeOptions) {
     }
 
     const sessionId = queryValue(req.query.session_id);
+    const frameSha256 = queryValue(req.query.frame_sha256);
     const expiresText = queryValue(req.query.expires);
     const signature = queryValue(req.query.sig);
     const expiresAtMs = Number(expiresText);
     const nowMs = Date.now();
-    const expectedSignature = Number.isSafeInteger(expiresAtMs) && sessionId
-      ? screenshotLinkSignature(configured, sessionId, expiresAtMs)
+    const expectedSignature = Number.isSafeInteger(expiresAtMs) && sessionId && /^[0-9a-f]{64}$/.test(frameSha256)
+      ? screenshotLinkSignature(configured, sessionId, frameSha256, expiresAtMs)
       : '';
     const valid = /^[A-Za-z0-9_.-]{1,128}$/.test(sessionId)
+      && /^[0-9a-f]{64}$/.test(frameSha256)
       && Number.isSafeInteger(expiresAtMs)
       && expiresAtMs >= nowMs
       && expiresAtMs <= nowMs + SCREENSHOT_LINK_TTL_MS
@@ -127,6 +129,10 @@ export function createGptActionBridgeRouter(options: GptActionBridgeOptions) {
       const bytes = Buffer.from(base64, 'base64');
       if (bytes.byteLength === 0 || bytes.byteLength > MAX_SCREENSHOT_BYTES) {
         throw new RuntimeError('LIMIT_EXCEEDED', 'screenshot exceeds 2 MB evidence limit');
+      }
+      const actualFrameSha256 = createHash('sha256').update(bytes).digest('hex');
+      if (!safeEqual(actualFrameSha256, frameSha256)) {
+        throw new RuntimeError('ACTION_REJECTED', 'screenshot capability no longer matches the cached frame');
       }
       res.status(200);
       res.setHeader('cache-control', 'private, no-store, max-age=0');
@@ -186,4 +192,5 @@ export function createGptActionBridgeRouter(options: GptActionBridgeOptions) {
 
   return router;
 }
+
 
