@@ -114,6 +114,11 @@ test('production acceptance proves runtime, OpenAPI, gameplay, and bounded bridg
   assert.match(workflow, /UAL_ACTION_API_KEY/, 'bridge smoke must authenticate with the existing protected Action bearer');
   assert.match(workflow, /\/game-browser\/session-start/, 'bridge smoke must start a real bounded session');
   assert.match(workflow, /\/game-browser\/observe/, 'bridge smoke must observe the session');
+  assert.match(workflow, /screenshot_url/, 'bridge smoke must retrieve the signed screenshot capability returned by observe');
+  assert.match(workflow, /frame_sha256/, 'bridge smoke must bind visual evidence to the exact observed frame digest');
+  assert.match(workflow, /sha256sum \/tmp\/bridge-screenshot\.png/, 'bridge smoke must verify fetched screenshot bytes against the observed digest');
+  assert.match(workflow, /BROWSER_PRODUCTION_URL/, 'bridge smoke must constrain screenshot evidence to the stable browser origin');
+  assert.doesNotMatch(workflow, /ACTION_IMAGE_TRANSPORT_NOT_IMPLEMENTED/, 'Production acceptance must not require the superseded missing-image contract');
   assert.match(workflow, /\/game-browser\/session-end/, 'bridge smoke must release the session');
   assert.match(workflow, /if:\s*always\(\)/, 'evidence/cleanup must survive acceptance failure');
 });
