@@ -32,7 +32,7 @@ test('relay pins exact PR head and only writes guarded chatgpt branches through 
   const text = workflow();
   assert.match(text, /\/github\/pull-request/);
   assert.match(text, /\/github\/file/);
-  assert.match(text, /\^chatgpt\\\//);
+  assert.match(text, /\^chatgpt\\\\\//);
   assert.match(text, /\^\[0-9a-fA-F\]\{40\}\$/);
   assert.match(text, /expectedHead/);
   assert.match(text, /blobSha/);
@@ -44,7 +44,7 @@ test('relay pins exact PR head and only writes guarded chatgpt branches through 
 test('relay bounds request size and replacement cardinality', () => {
   const text = workflow();
   assert.match(text, /REQUEST_MAX_BYTES: '60000'/);
-  assert.match(text, /operations \| length >= 1 and length <= 4/);
-  assert.match(text, /replacements \| length >= 1 and length <= 8/);
-  assert.match(text, /\.old \| type == \"string\" and length >= 1/);
+  assert.match(text, /\.operations \| type == "array" and length >= 1 and length <= 4/);
+  assert.match(text, /\.replacements \| type == "array" and length >= 1 and length <= 8/);
+  assert.match(text, /\.old \| type == "string" and length >= 1/);
 });
