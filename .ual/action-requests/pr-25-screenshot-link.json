@@ -1,0 +1,55 @@
+{
+  "planVersion": 1,
+  "operations": [
+    {
+      "path": "apps/gpt-action-api/src/game-browser-control.mjs",
+      "message": "feat(action): project signed browser screenshot links",
+      "replacements": [
+        {
+          "old": "const MAX_REQUEST_BYTES = 64 * 1024;\nconst MAX_UPSTREAM_BYTES = 4 * 1024 * 1024;\nconst MAX_ERROR_MESSAGE = 1024;",
+          "new": "import { createHmac } from 'node:crypto';\n\nconst MAX_REQUEST_BYTES = 64 * 1024;\nconst MAX_UPSTREAM_BYTES = 4 * 1024 * 1024;\nconst MAX_ERROR_MESSAGE = 1024;\nconst MAX_SCREENSHOT_BYTES = 2_000_000;\nconst SCREENSHOT_LINK_TTL_MS = 5 * 60_000;"
+        },
+        {
+          "old": "function screenshotDescriptor(value) {\n  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;\n  const base64 = typeof value.base64 === 'string' ? value.base64 : undefined;\n  let bytes;\n  if (base64 !== undefined) {\n    try { bytes = Buffer.from(base64, 'base64').byteLength; } catch { bytes = 0; }\n  }\n  return {\n    available: true,\n    transported: false,\n    reason: 'ACTION_IMAGE_TRANSPORT_NOT_IMPLEMENTED',\n    ...(bytes === undefined ? {} : { bytes }),\n  };\n}\n\nfunction projectEvidence(value) {\n  if (Array.isArray(value)) return value.map(projectEvidence);\n  if (!value || typeof value !== 'object') return value;\n  const projected = {};\n  for (const [key, child] of Object.entries(value)) {\n    projected[key] = key === 'screenshot' ? screenshotDescriptor(child) : projectEvidence(child);\n  }\n  return projected;\n}",
+          "new": "function screenshotLinkSignature(token, sessionId, expiresAtMs) {\n  return createHmac('sha256', token)\n    .update(`ual:game-browser-screenshot-link:v1\\n${sessionId}\\n${expiresAtMs}`, 'utf8')\n    .digest('hex');\n}\n\nfunction responseSessionId(value) {\n  const root = objectValue(value);\n  const observation = objectValue(root?.observation);\n  const candidate = typeof root?.session_id === 'string' ? root.session_id : observation?.session_id;\n  return typeof candidate === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(candidate) ? candidate : undefined;\n}\n\nfunction screenshotDescriptor(value, context) {\n  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;\n  const base64 = typeof value.base64 === 'string' ? value.base64 : undefined;\n  let bytes;\n  if (base64 !== undefined) {\n    try { bytes = Buffer.from(base64, 'base64').byteLength; } catch { bytes = 0; }\n  }\n  if (!base64 || !context.sessionId || !bytes || bytes > MAX_SCREENSHOT_BYTES) {\n    return {\n      available: true,\n      transported: false,\n      reason: bytes && bytes > MAX_SCREENSHOT_BYTES ? 'SCREENSHOT_TOO_LARGE' : 'SCREENSHOT_LINK_UNAVAILABLE',\n      ...(bytes === undefined ? {} : { bytes }),\n    };\n  }\n\n  const expiresAtMs = context.nowMs + SCREENSHOT_LINK_TTL_MS;\n  const params = new URLSearchParams({\n    session_id: context.sessionId,\n    expires: String(expiresAtMs),\n    sig: screenshotLinkSignature(context.config.token, context.sessionId, expiresAtMs),\n  });\n  return {\n    available: true,\n    transported: true,\n    mime_type: 'image/png',\n    content_trust: 'UNTRUSTED_TARGET_CONTENT',\n    bytes,\n    screenshot_url: `${context.config.origin}/internal/gpt-action/screenshot?${params.toString()}`,\n    expires_at: new Date(expiresAtMs).toISOString(),\n  };\n}\n\nfunction projectEvidence(value, context) {\n  if (Array.isArray(value)) return value.map((child) => projectEvidence(child, context));\n  if (!value || typeof value !== 'object') return value;\n  const projected = {};\n  for (const [key, child] of Object.entries(value)) {\n    projected[key] = key === 'screenshot' ? screenshotDescriptor(child, context) : projectEvidence(child, context);\n  }\n  return projected;\n}"
+        },
+        {
+          "old": "  return result(upstream.status, projectEvidence(payload));",
+          "new": "  return result(upstream.status, projectEvidence(payload, {\n    config,\n    sessionId: responseSessionId(payload),\n    nowMs: Date.now(),\n  }));"
+        }
+      ]
+    },
+    {
+      "path": "apps/game-browser-mcp/src/bridge/gpt-action-bridge.ts",
+      "message": "feat(browser): serve signed cached screenshot capabilities",
+      "replacements": [
+        {
+          "old": "import { createHash, timingSafeEqual } from 'node:crypto';",
+          "new": "import { createHash, createHmac, timingSafeEqual } from 'node:crypto';"
+        },
+        {
+          "old": "export interface GptActionBridgeOptions {\n  token?: string | undefined;\n  surface?: GameToolSurface | undefined;\n  registerForCommit?: ((expectedCommitSha: string) => Promise<RegistrationRef>) | undefined;\n}",
+          "new": "interface GameBridgeSurface extends GameToolSurface {\n  latestScreenshot(input: unknown): Promise<unknown>;\n}\n\nexport interface GptActionBridgeOptions {\n  token?: string | undefined;\n  surface?: GameBridgeSurface | undefined;\n  registerForCommit?: ((expectedCommitSha: string) => Promise<RegistrationRef>) | undefined;\n}"
+        },
+        {
+          "old": "export function deriveGptActionBridgeBinding(token: string): string {\n  if (!token) throw new Error('GPT Action bridge token is required to derive a principal binding');\n  return createHash('sha256').update(`ual:gpt-action-game-browser-bridge:v1:${token}`, 'utf8').digest('hex');\n}\n\nfunction errorStatus(error: RuntimeError): number {",
+          "new": "export function deriveGptActionBridgeBinding(token: string): string {\n  if (!token) throw new Error('GPT Action bridge token is required to derive a principal binding');\n  return createHash('sha256').update(`ual:gpt-action-game-browser-bridge:v1:${token}`, 'utf8').digest('hex');\n}\n\nconst SCREENSHOT_LINK_TTL_MS = 5 * 60_000;\nconst MAX_SCREENSHOT_BYTES = 2_000_000;\n\nfunction screenshotLinkSignature(token: string, sessionId: string, expiresAtMs: number): string {\n  return createHmac('sha256', token)\n    .update(`ual:game-browser-screenshot-link:v1\\n${sessionId}\\n${expiresAtMs}`, 'utf8')\n    .digest('hex');\n}\n\nfunction queryValue(value: unknown): string {\n  return typeof value === 'string' ? value : '';\n}\n\nfunction errorStatus(error: RuntimeError): number {"
+        },
+        {
+          "old": "export function createGptActionBridgeRouter(options: GptActionBridgeOptions) {\n  const router = express.Router();\n\n  router.use((req, res, next) => {",
+          "new": "export function createGptActionBridgeRouter(options: GptActionBridgeOptions) {\n  const router = express.Router();\n\n  router.get('/screenshot', async (req, res) => {\n    const configured = options.token?.trim();\n    if (!configured || !options.surface) {\n      res.status(503).json({ error: 'BRIDGE_CONFIGURATION_ERROR' });\n      return;\n    }\n\n    const sessionId = queryValue(req.query.session_id);\n    const expiresText = queryValue(req.query.expires);\n    const signature = queryValue(req.query.sig);\n    const expiresAtMs = Number(expiresText);\n    const nowMs = Date.now();\n    const expectedSignature = Number.isSafeInteger(expiresAtMs) && sessionId\n      ? screenshotLinkSignature(configured, sessionId, expiresAtMs)\n      : '';\n    const valid = /^[A-Za-z0-9_.-]{1,128}$/.test(sessionId)\n      && Number.isSafeInteger(expiresAtMs)\n      && expiresAtMs >= nowMs\n      && expiresAtMs <= nowMs + SCREENSHOT_LINK_TTL_MS\n      && safeEqual(signature, expectedSignature);\n    if (!valid) {\n      res.status(403).json({ error: 'INVALID_SCREENSHOT_LINK' });\n      return;\n    }\n\n    try {\n      const value = await options.surface.latestScreenshot({ session_id: sessionId }) as {\n        screenshot?: { base64?: unknown; mime_type?: unknown; bytes?: unknown };\n      };\n      const base64 = value?.screenshot?.base64;\n      if (typeof base64 !== 'string' || value?.screenshot?.mime_type !== 'image/png') {\n        throw new RuntimeError('CAPABILITY_UNAVAILABLE', 'cached screenshot unavailable');\n      }\n      const bytes = Buffer.from(base64, 'base64');\n      if (bytes.byteLength === 0 || bytes.byteLength > MAX_SCREENSHOT_BYTES) {\n        throw new RuntimeError('LIMIT_EXCEEDED', 'screenshot exceeds 2 MB evidence limit');\n      }\n      res.status(200);\n      res.setHeader('cache-control', 'private, no-store, max-age=0');\n      res.setHeader('content-type', 'image/png');\n      res.setHeader('content-length', String(bytes.byteLength));\n      res.setHeader('x-content-type-options', 'nosniff');\n      res.end(bytes);\n    } catch (error) {\n      sendError(res, error);\n    }\n  });\n\n  router.use((req, res, next) => {"
+        }
+      ]
+    },
+    {
+      "path": "tests/gpt-action-game-browser-bridge.test.mjs",
+      "message": "test(action): expect signed screenshot evidence links",
+      "replacements": [
+        {
+          "old": "  assert.equal(response.body.observation.screenshot.available, true);\n  assert.equal(response.body.observation.screenshot.transported, false);\n  assert.equal(response.body.observation.screenshot.reason, 'ACTION_IMAGE_TRANSPORT_NOT_IMPLEMENTED');\n  assert.equal(response.body.observation.screenshot.bytes, 5);\n  assert.equal('base64' in response.body.observation.screenshot, false);\n  assert.equal(JSON.stringify(response.body).includes('/tmp/frame.png'), false);",
+          "new": "  assert.equal(response.body.observation.screenshot.available, true);\n  assert.equal(response.body.observation.screenshot.transported, true);\n  assert.equal(response.body.observation.screenshot.mime_type, 'image/png');\n  assert.equal(response.body.observation.screenshot.bytes, 5);\n  assert.match(response.body.observation.screenshot.screenshot_url, /^https:\\/\\/browser\\.example\\.test\\/internal\\/gpt-action\\/screenshot\\?/);\n  assert.match(response.body.observation.screenshot.expires_at, /^\\d{4}-\\d{2}-\\d{2}T/);\n  assert.equal('base64' in response.body.observation.screenshot, false);\n  assert.equal(JSON.stringify(response.body).includes('/tmp/frame.png'), false);"
+        }
+      ]
+    }
+  ]
+}
