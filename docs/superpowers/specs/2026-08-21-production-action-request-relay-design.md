@@ -71,11 +71,21 @@ Preparing a plan file on an isolated staging branch is orchestration input, not 
 4. Read the plan file from the same target repository through the Production Action at exact `planRef`; require its returned blob SHA to equal `planBlobSha`; then validate the complete plan schema and bounds.
 5. Read every requested target file through the Production Action and preflight every exact replacement before any mutation. Every `old` fragment must occur exactly once.
 6. Re-read the PR and require the head still to equal `expectedHead` after preflight.
-7. Write the preflighted files through `PUT /github/file`, one at a time. Before each write, re-read the PR and require the current head to equal the prior accepted head. The returned Action commit becomes the only accepted head for the next operation.
-8. Re-read the PR and require the final head to equal the final Action write commit.
+7. Write the preflighted files through `PUT /github/file`, one at a time. Before each write, require the PR head to equal the prior accepted exact head. Because GitHub's PR projection can briefly lag a successful contents write, this equality check may poll up to six times at one-second intervals for that one expected SHA. A different SHA is never accepted. The returned Action commit becomes the only accepted head for the next operation.
+8. After the last write, use the same bounded exact-SHA polling rule and require the final PR head to equal the final Action write commit.
 9. Record a non-secret PASS comment containing only the target repository, PR number, and final exact head.
 
 Relay runs are serialized with a single concurrency group and are never cancelled in progress. Duplicate operation paths are rejected so preflight blob SHAs cannot become internally stale during the same request.
+
+## Provider Consistency Boundary
+
+A successful GitHub Contents API write and the pull-request projection for the same branch are not guaranteed to become visible atomically. The relay treats this as bounded eventual consistency, not as permission to weaken exact-head checks.
+
+- Polling begins only after the request and all repair content have already passed the normal exact-head and replacement preflight gates.
+- Each poll asks only whether the PR has reached one already-known exact SHA: either the request's `expectedHead` or the immediately preceding Action write commit.
+- The retry budget is six attempts separated by one second.
+- HTTP failures still fail closed.
+- If the expected SHA does not appear within the retry budget, the relay fails. It never proceeds using a different observed head.
 
 ## Security Properties
 
@@ -85,7 +95,7 @@ Relay runs are serialized with a single concurrency group and are never cancelle
 - No shell `eval`, arbitrary GitHub REST proxy, direct `git push`, branch deletion, settings mutation, secret mutation, deployment mutation, release mutation, or billing operation is added.
 - All target-repository plan reads, implementation reads, and implementation writes traverse the Production Action; the relay does not use a GitHub credential for target repository mutation.
 - The Production Action's owner allowlist, exact repository identity check, default-branch write rejection, `chatgpt/*` enforcement, bounded content size, and upstream-body secrecy remain authoritative.
-- Exact-head checks fail closed when the target PR moves before or during execution.
+- Exact-head checks fail closed when the target PR moves before or during execution. Bounded polling can only wait for one already-known exact expected SHA to propagate; it cannot authorize an alternate head.
 - A failed plan validation or replacement preflight performs no target implementation write.
 - Any successful target write changes the exact PR head and therefore invalidates earlier verification/review evidence, as required by UAL.
 
@@ -95,6 +105,6 @@ This workflow does not add a new Custom GPT Action endpoint, bypass Action authe
 
 ## Verification
 
-Repository conformance tests assert the trusted trigger, actor/title gate, credential boundary, stable Production Action URL, public-request size cap, immutable plan pointer, private-fragment boundary, plan bounds, exact-head pinning, `chatgpt/*` guard, complete preflight-before-write ordering, duplicate-path rejection, serialized execution, and absence of direct `git push` or Git-ref mutation.
+Repository conformance tests assert the trusted trigger, actor/title gate, credential boundary, stable Production Action URL, public-request size cap, immutable plan pointer, private-fragment boundary, plan bounds, exact-head pinning, `chatgpt/*` guard, complete preflight-before-write ordering, duplicate-path rejection, serialized execution, bounded exact-SHA propagation polling, and absence of direct `git push` or Git-ref mutation.
 
 The normal UAL root suite, game-browser suite/typecheck/build, and provider preflight must remain green on the exact relay head before merge. The exact relay head also requires fresh independent Standards PASS and Spec PASS review.

@@ -18,6 +18,8 @@ env:
   ACTION_URL: https://ual-gpt-action-api.vercel.app
   REQUEST_MAX_BYTES: '4096'
   PLAN_MAX_BYTES: '60000'
+  PR_HEAD_RETRY_ATTEMPTS: '6'
+  PR_HEAD_RETRY_DELAY_SECONDS: '1'
 
 jobs:
   apply-request:
@@ -191,15 +193,33 @@ jobs:
           expected_current=$(jq -r '.expectedHead' /tmp/request.json)
           final_commit=''
 
+          wait_for_pr_head() {
+            local repository="$1"
+            local pr="$2"
+            local expected_head="$3"
+            local output_path="$4"
+            local attempt status actual_head=''
+            for ((attempt=1; attempt<=PR_HEAD_RETRY_ATTEMPTS; attempt++)); do
+              status=$(curl -sS -G -o "$output_path" -w '%{http_code}' \
+                -H "Authorization: Bearer $ACTION_KEY" \
+                --data-urlencode "repository=$repository" \
+                --data-urlencode "number=$pr" \
+                "$ACTION_URL/github/pull-request")
+              [ "$status" = '200' ] || { echo "::error::Production Action PR head read failed (HTTP $status)"; return 1; }
+              actual_head=$(jq -r '.head.sha // empty' "$output_path")
+              if [ "$actual_head" = "$expected_head" ]; then
+                return 0
+              fi
+              if [ "$attempt" -lt "$PR_HEAD_RETRY_ATTEMPTS" ]; then
+                sleep "$PR_HEAD_RETRY_DELAY_SECONDS"
+              fi
+            done
+            echo "::error::timed out waiting for PR head $expected_head; last observed $actual_head"
+            return 1
+          }
+
           for ((i=0; i<operation_count; i++)); do
-            status=$(curl -sS -G -o /tmp/pr-before-write.json -w '%{http_code}' \
-              -H "Authorization: Bearer $ACTION_KEY" \
-              --data-urlencode "repository=$repository" \
-              --data-urlencode "number=$pr" \
-              "$ACTION_URL/github/pull-request")
-            [ "$status" = '200' ] || { echo "::error::Production Action PR write-pin failed (HTTP $status)"; exit 1; }
-            actual_head=$(jq -r '.head.sha' /tmp/pr-before-write.json)
-            [ "$actual_head" = "$expected_current" ] || { echo '::error::PR head moved during relay execution'; exit 1; }
+            wait_for_pr_head "$repository" "$pr" "$expected_current" /tmp/pr-before-write.json || exit 1
 
             path=$(jq -r '.path' "/tmp/op-$i.json")
             message=$(jq -r '.message' "/tmp/op-$i.json")
@@ -241,14 +261,33 @@ jobs:
           set -euo pipefail
           repository=$(jq -r '.repository' /tmp/request.json)
           pr=$(jq -r '.pullRequest' /tmp/request.json)
-          status=$(curl -sS -G -o /tmp/pr-after.json -w '%{http_code}' \
-            -H "Authorization: Bearer $ACTION_KEY" \
-            --data-urlencode "repository=$repository" \
-            --data-urlencode "number=$pr" \
-            "$ACTION_URL/github/pull-request")
-          [ "$status" = '200' ] || { echo "::error::Production Action final PR read failed (HTTP $status)"; exit 1; }
-          actual=$(jq -r '.head.sha' /tmp/pr-after.json)
-          [ "$actual" = "$FINAL_COMMIT" ] || { echo "::error::Final PR head $actual does not match Action write $FINAL_COMMIT"; exit 1; }
+
+          wait_for_pr_head() {
+            local repository="$1"
+            local pr="$2"
+            local expected_head="$3"
+            local output_path="$4"
+            local attempt status actual_head=''
+            for ((attempt=1; attempt<=PR_HEAD_RETRY_ATTEMPTS; attempt++)); do
+              status=$(curl -sS -G -o "$output_path" -w '%{http_code}' \
+                -H "Authorization: Bearer $ACTION_KEY" \
+                --data-urlencode "repository=$repository" \
+                --data-urlencode "number=$pr" \
+                "$ACTION_URL/github/pull-request")
+              [ "$status" = '200' ] || { echo "::error::Production Action final PR head read failed (HTTP $status)"; return 1; }
+              actual_head=$(jq -r '.head.sha // empty' "$output_path")
+              if [ "$actual_head" = "$expected_head" ]; then
+                return 0
+              fi
+              if [ "$attempt" -lt "$PR_HEAD_RETRY_ATTEMPTS" ]; then
+                sleep "$PR_HEAD_RETRY_DELAY_SECONDS"
+              fi
+            done
+            echo "::error::timed out waiting for PR head $expected_head; last observed $actual_head"
+            return 1
+          }
+
+          wait_for_pr_head "$repository" "$pr" "$FINAL_COMMIT" /tmp/pr-after.json || exit 1
 
       - name: Record non-secret success on request issue
         shell: bash

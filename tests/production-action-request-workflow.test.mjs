@@ -70,3 +70,15 @@ test('relay preflights all replacements before first write and serializes reques
   assert.match(text, /expected_current=/);
   assert.match(text, /PR head moved during relay execution/);
 });
+
+test('relay tolerates bounded PR-head propagation lag without accepting a different head', () => {
+  const text = workflow();
+  assert.match(text, /PR_HEAD_RETRY_ATTEMPTS: '6'/);
+  assert.match(text, /PR_HEAD_RETRY_DELAY_SECONDS: '1'/);
+  assert.match(text, /wait_for_pr_head\(\)/);
+  assert.match(text, /sleep "\$PR_HEAD_RETRY_DELAY_SECONDS"/);
+  assert.match(text, /timed out waiting for PR head/);
+  assert.match(text, /actual_head.*expected_head/s);
+  const waits = text.match(/wait_for_pr_head "\$repository" "\$pr"/g) ?? [];
+  assert.ok(waits.length >= 2, 'per-write and final head verification must use bounded exact-head polling');
+});
