@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import test from 'node:test';
 
 import { handleGameBrowserControlRequest } from '../apps/gpt-action-api/src/game-browser-control.mjs';
@@ -12,7 +13,6 @@ const screenshot = {
 const env = {
   GAME_BROWSER_RUNTIME_BASE_URL: 'https://browser.example.test',
   GAME_BROWSER_BRIDGE_TOKEN: 'bridge-secret-value',
-  VERCEL_PROJECT_PRODUCTION_URL: 'action.example.test',
 };
 
 function jsonResponse(body, status = 200) {
@@ -61,52 +61,47 @@ test('Action projection exposes a short-lived signed HTTPS link for the already-
   assert.equal(descriptor.transported, true);
   assert.equal(descriptor.mime_type, 'image/png');
   assert.equal(descriptor.bytes, pngBytes.byteLength);
-  assert.match(descriptor.screenshot_url, /^https:\/\/action\.example\.test\/game-browser\/screenshot\?/);
+  assert.match(descriptor.screenshot_url, /^https:\/\/browser\.example\.test\/internal\/gpt-action\/screenshot\?/);
   assert.match(descriptor.expires_at, /^\d{4}-\d{2}-\d{2}T/);
   assert.equal('base64' in descriptor, false);
   assert.equal(JSON.stringify(observed.body).includes(screenshot.base64), false);
   assert.equal(JSON.stringify(observed.body).includes(screenshot.path), false);
 
   const screenshotUrl = new URL(descriptor.screenshot_url);
-  const rendered = await handleGameBrowserControlRequest({
-    method: 'GET',
-    path: screenshotUrl.pathname,
-    searchParams: Object.fromEntries(screenshotUrl.searchParams.entries()),
-    headers: { host: screenshotUrl.host },
-  }, { env, fetchImpl });
-
-  assert.equal(rendered.status, 200);
-  assert.equal(rendered.headers['content-type'], 'image/png');
-  assert.equal(rendered.headers['cache-control'], 'private, no-store, max-age=0');
-  assert.ok(Buffer.isBuffer(rendered.body));
-  assert.deepEqual(rendered.body, pngBytes);
-  assert.equal(calls.length, 2);
+  assert.equal(screenshotUrl.searchParams.get('session_id'), 'session_123');
+  const expires = Number(screenshotUrl.searchParams.get('expires'));
+  assert.equal(Number.isSafeInteger(expires), true);
+  assert.ok(expires > Date.now());
+  assert.ok(expires <= Date.now() + 5 * 60_000);
+  const expectedSignature = createHmac('sha256', 'bridge-secret-value')
+    .update(`ual:game-browser-screenshot-link:v1\nsession_123\n${expires}`, 'utf8')
+    .digest('hex');
+  assert.equal(screenshotUrl.searchParams.get('sig'), expectedSignature);
+  assert.equal(calls.length, 1);
 });
 
-test('signed screenshot links fail closed when tampered', async () => {
-  const fetchImpl = async (url) => {
-    if (String(url).endsWith('/internal/gpt-action/observe')) {
-      return jsonResponse({ session_id: 'session_123', observation: { session_id: 'session_123', screenshot } });
-    }
-    throw new Error('tampered link must not reach browser runtime');
-  };
-
-  const observed = await handleGameBrowserControlRequest({
+test('Action projection fails closed instead of issuing a capability for oversized screenshots', async () => {
+  const oversized = { base64: Buffer.alloc(2_000_001, 1).toString('base64'), path: '/tmp/oversized.png' };
+  const response = await handleGameBrowserControlRequest({
     method: 'POST',
     path: '/game-browser/observe',
     body: { sessionId: 'session_123' },
-    headers: { host: 'action.example.test' },
-  }, { env, fetchImpl });
-  const screenshotUrl = new URL(observed.body.observation.screenshot.screenshot_url);
-  screenshotUrl.searchParams.set('sig', '0'.repeat(64));
+  }, {
+    env,
+    fetchImpl: async () => jsonResponse({
+      session_id: 'session_123',
+      observation: { session_id: 'session_123', screenshot: oversized },
+    }),
+  });
 
-  const response = await handleGameBrowserControlRequest({
-    method: 'GET',
-    path: screenshotUrl.pathname,
-    searchParams: Object.fromEntries(screenshotUrl.searchParams.entries()),
-    headers: { host: screenshotUrl.host },
-  }, { env, fetchImpl });
-
-  assert.equal(response.status, 403);
-  assert.deepEqual(response.body, { error: 'INVALID_SCREENSHOT_LINK' });
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body.observation.screenshot, {
+    available: true,
+    transported: false,
+    reason: 'SCREENSHOT_TOO_LARGE',
+    bytes: 2_000_001,
+  });
+  assert.equal(JSON.stringify(response.body).includes(oversized.base64), false);
+  assert.equal(JSON.stringify(response.body).includes(oversized.path), false);
 });
+
