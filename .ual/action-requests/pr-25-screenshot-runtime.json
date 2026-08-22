@@ -1,0 +1,49 @@
+{
+  "planVersion": 1,
+  "operations": [
+    {
+      "path": "apps/game-browser-mcp/src/browser/browser-adapter.ts",
+      "message": "feat(browser): expose cached screenshot read seam",
+      "replacements": [
+        {
+          "old": "  observe(session: BrowserSessionRef): Promise<BrowserObservation>;\n  input(session: BrowserSessionRef, batch: AcceptedActionBatch): Promise<BrowserBatchResult>;",
+          "new": "  observe(session: BrowserSessionRef): Promise<BrowserObservation>;\n  latestScreenshot(session: BrowserSessionRef): Promise<{ base64: string; mimeType: 'image/png' }>;\n  input(session: BrowserSessionRef, batch: AcceptedActionBatch): Promise<BrowserBatchResult>;"
+        }
+      ]
+    },
+    {
+      "path": "apps/game-browser-mcp/sandbox/worker.mjs",
+      "message": "feat(browser): read already-captured screenshot without observing",
+      "replacements": [
+        {
+          "old": "  if (request.type === 'observe') {\n    output({ observation: observe(ledger) });\n    return;\n  }\n  if (request.type === 'input') {",
+          "new": "  if (request.type === 'observe') {\n    output({ observation: observe(ledger) });\n    return;\n  }\n  if (request.type === 'screenshot_latest') {\n    const shotPath = `${root}/${session}-latest.png`;\n    try {\n      const bytes = readFileSync(shotPath);\n      output({ screenshot: { base64: bytes.toString('base64'), mimeType: 'image/png' } });\n    } catch {\n      throw workerError('CAPABILITY_UNAVAILABLE', 'latest screenshot unavailable');\n    }\n    return;\n  }\n  if (request.type === 'input') {"
+        }
+      ]
+    },
+    {
+      "path": "apps/game-browser-mcp/src/browser/vercel-sandbox-browser.ts",
+      "message": "feat(browser): retrieve cached sandbox screenshot",
+      "replacements": [
+        {
+          "old": "  async observe(session: BrowserSessionRef): Promise<BrowserObservation> {\n    const handle = await this.#factory.get(session.sandboxId);\n    const payload = await this.#worker(handle, { type: 'observe', session_id: session.logicalSessionId });\n    return asObservation(payload.observation);\n  }\n\n  async input(session: BrowserSessionRef, batch: AcceptedActionBatch): Promise<BrowserBatchResult> {",
+          "new": "  async observe(session: BrowserSessionRef): Promise<BrowserObservation> {\n    const handle = await this.#factory.get(session.sandboxId);\n    const payload = await this.#worker(handle, { type: 'observe', session_id: session.logicalSessionId });\n    return asObservation(payload.observation);\n  }\n\n  async latestScreenshot(session: BrowserSessionRef): Promise<{ base64: string; mimeType: 'image/png' }> {\n    const handle = await this.#factory.get(session.sandboxId);\n    const payload = await this.#worker(handle, { type: 'screenshot_latest', session_id: session.logicalSessionId });\n    const base64 = payload?.screenshot?.base64;\n    if (typeof base64 !== 'string' || base64.length === 0) throw new Error('latest screenshot unavailable');\n    return { base64, mimeType: 'image/png' };\n  }\n\n  async input(session: BrowserSessionRef, batch: AcceptedActionBatch): Promise<BrowserBatchResult> {"
+        }
+      ]
+    },
+    {
+      "path": "apps/game-browser-mcp/src/tools/index.ts",
+      "message": "feat(browser): expose bounded cached screenshot internally",
+      "replacements": [
+        {
+          "old": "  async function readState(rawInput: unknown) {\n    const input = ReadSchema.parse(rawInput);",
+          "new": "  async function latestScreenshot(rawInput: unknown) {\n    const input = SessionSchema.parse(rawInput);\n    const owned = await usableSession(input.session_id);\n    await requireLive(owned.ref, owned.session.session_id);\n    const screenshot = await deps.browser.latestScreenshot(owned.ref);\n    const bytes = Buffer.from(screenshot.base64, 'base64');\n    if (bytes.byteLength === 0 || bytes.byteLength > 2_000_000) {\n      throw new RuntimeError('LIMIT_EXCEEDED', 'screenshot exceeds 2 MB internal evidence limit');\n    }\n    return {\n      session_id: input.session_id,\n      deployment_provenance: provenance(owned.registration),\n      content_trust: UNTRUSTED_TARGET_CONTENT,\n      screenshot: { base64: screenshot.base64, mime_type: screenshot.mimeType, bytes: bytes.byteLength },\n    };\n  }\n\n  async function readState(rawInput: unknown) {\n    const input = ReadSchema.parse(rawInput);"
+        },
+        {
+          "old": "  return { sessionStart, observe, input, readState, reset, sessionEnd, debugSession };",
+          "new": "  return { sessionStart, observe, input, latestScreenshot, readState, reset, sessionEnd, debugSession };"
+        }
+      ]
+    }
+  ]
+}
