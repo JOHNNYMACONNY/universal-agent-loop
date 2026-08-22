@@ -251,6 +251,23 @@ export function createGameToolServices(deps: GameToolDependencies) {
     return result;
   }
 
+  async function latestScreenshot(rawInput: unknown) {
+    const input = SessionSchema.parse(rawInput);
+    const owned = await usableSession(input.session_id);
+    await requireLive(owned.ref, owned.session.session_id);
+    const screenshot = await deps.browser.latestScreenshot(owned.ref);
+    const bytes = Buffer.from(screenshot.base64, 'base64');
+    if (bytes.byteLength === 0 || bytes.byteLength > 2_000_000) {
+      throw new RuntimeError('LIMIT_EXCEEDED', 'screenshot exceeds 2 MB internal evidence limit');
+    }
+    return {
+      session_id: input.session_id,
+      deployment_provenance: provenance(owned.registration),
+      content_trust: UNTRUSTED_TARGET_CONTENT,
+      screenshot: { base64: screenshot.base64, mime_type: screenshot.mimeType, bytes: bytes.byteLength },
+    };
+  }
+
   async function readState(rawInput: unknown) {
     const input = ReadSchema.parse(rawInput);
     const owned = await usableSession(input.session_id);
@@ -299,5 +316,6 @@ export function createGameToolServices(deps: GameToolDependencies) {
     return value;
   }
 
-  return { sessionStart, observe, input, readState, reset, sessionEnd, debugSession };
+  return { sessionStart, observe, input, latestScreenshot, readState, reset, sessionEnd, debugSession };
 }
+
