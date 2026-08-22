@@ -252,6 +252,10 @@ test('signed screenshot capability serves only the cached PNG and rejects tamper
     token: TOKEN,
     surface,
     registerForCommit: async () => ({ target_registration_id: 'rgc1.registration' }),
+    readScreenshot: async (sessionId) => {
+      calls.push({ name: 'readScreenshot', input: sessionId });
+      return { base64: Buffer.from('cached-frame').toString('base64'), mimeType: 'image/png' };
+    },
   }, async (baseUrl) => {
     const expires = Date.now() + 60_000;
     const frameSha256 = createHash('sha256').update(Buffer.from('cached-frame')).digest('hex');
@@ -266,9 +270,10 @@ test('signed screenshot capability serves only the cached PNG and rejects tamper
     assert.equal(image.headers.get('cache-control'), 'private, no-store, max-age=0');
     assert.equal(image.headers.get('x-content-type-options'), 'nosniff');
     assert.deepEqual(Buffer.from(await image.arrayBuffer()), Buffer.from('cached-frame'));
-    assert.deepEqual(calls.filter((call) => call.name === 'latestScreenshot'), [
-      { name: 'latestScreenshot', input: { session_id: 'session_123' } },
+    assert.deepEqual(calls.filter((call) => call.name === 'readScreenshot'), [
+      { name: 'readScreenshot', input: 'session_123' },
     ]);
+    assert.deepEqual(calls.filter((call) => call.name === 'latestScreenshot'), []);
 
     const staleFrameSha256 = createHash('sha256').update(Buffer.from('earlier-frame')).digest('hex');
     const staleSignature = createHmac('sha256', TOKEN)
@@ -300,5 +305,3 @@ test('signed screenshot capability serves only the cached PNG and rejects tamper
     assert.equal(bearerStillRequired.status, 401);
   });
 });
-
-
