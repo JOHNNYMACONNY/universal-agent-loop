@@ -1,0 +1,59 @@
+{
+  "planVersion": 1,
+  "operations": [
+    {
+      "path": "tests/gpt-action-screenshot-link.test.mjs",
+      "message": "test(action): verify direct browser screenshot capability",
+      "replacements": [
+        {
+          "old": "import assert from 'node:assert/strict';\nimport test from 'node:test';",
+          "new": "import assert from 'node:assert/strict';\nimport { createHmac } from 'node:crypto';\nimport test from 'node:test';"
+        },
+        {
+          "old": "  GAME_BROWSER_BRIDGE_TOKEN: 'bridge-secret-value',\n  VERCEL_PROJECT_PRODUCTION_URL: 'action.example.test',",
+          "new": "  GAME_BROWSER_BRIDGE_TOKEN: 'bridge-secret-value',"
+        },
+        {
+          "old": "  assert.match(descriptor.screenshot_url, /^https:\\/\\/action\\.example\\.test\\/game-browser\\/screenshot\\?/);\n  assert.match(descriptor.expires_at, /^\\d{4}-\\d{2}-\\d{2}T/);\n  assert.equal('base64' in descriptor, false);\n  assert.equal(JSON.stringify(observed.body).includes(screenshot.base64), false);\n  assert.equal(JSON.stringify(observed.body).includes(screenshot.path), false);\n\n  const screenshotUrl = new URL(descriptor.screenshot_url);\n  const rendered = await handleGameBrowserControlRequest({\n    method: 'GET',\n    path: screenshotUrl.pathname,\n    searchParams: Object.fromEntries(screenshotUrl.searchParams.entries()),\n    headers: { host: screenshotUrl.host },\n  }, { env, fetchImpl });\n\n  assert.equal(rendered.status, 200);\n  assert.equal(rendered.headers['content-type'], 'image/png');\n  assert.equal(rendered.headers['cache-control'], 'private, no-store, max-age=0');\n  assert.ok(Buffer.isBuffer(rendered.body));\n  assert.deepEqual(rendered.body, pngBytes);\n  assert.equal(calls.length, 2);",
+          "new": "  assert.match(descriptor.screenshot_url, /^https:\\/\\/browser\\.example\\.test\\/internal\\/gpt-action\\/screenshot\\?/);\n  assert.match(descriptor.expires_at, /^\\d{4}-\\d{2}-\\d{2}T/);\n  assert.equal('base64' in descriptor, false);\n  assert.equal(JSON.stringify(observed.body).includes(screenshot.base64), false);\n  assert.equal(JSON.stringify(observed.body).includes(screenshot.path), false);\n\n  const screenshotUrl = new URL(descriptor.screenshot_url);\n  assert.equal(screenshotUrl.searchParams.get('session_id'), 'session_123');\n  const expires = Number(screenshotUrl.searchParams.get('expires'));\n  assert.equal(Number.isSafeInteger(expires), true);\n  assert.ok(expires > Date.now());\n  assert.ok(expires <= Date.now() + 5 * 60_000);\n  const expectedSignature = createHmac('sha256', 'bridge-secret-value')\n    .update(`ual:game-browser-screenshot-link:v1\\nsession_123\\n${expires}`, 'utf8')\n    .digest('hex');\n  assert.equal(screenshotUrl.searchParams.get('sig'), expectedSignature);\n  assert.equal(calls.length, 1);"
+        },
+        {
+          "old": "test('signed screenshot links fail closed when tampered', async () => {\n  const fetchImpl = async (url) => {\n    if (String(url).endsWith('/internal/gpt-action/observe')) {\n      return jsonResponse({ session_id: 'session_123', observation: { session_id: 'session_123', screenshot } });\n    }\n    throw new Error('tampered link must not reach browser runtime');\n  };\n\n  const observed = await handleGameBrowserControlRequest({\n    method: 'POST',\n    path: '/game-browser/observe',\n    body: { sessionId: 'session_123' },\n    headers: { host: 'action.example.test' },\n  }, { env, fetchImpl });\n  const screenshotUrl = new URL(observed.body.observation.screenshot.screenshot_url);\n  screenshotUrl.searchParams.set('sig', '0'.repeat(64));\n\n  const response = await handleGameBrowserControlRequest({\n    method: 'GET',\n    path: screenshotUrl.pathname,\n    searchParams: Object.fromEntries(screenshotUrl.searchParams.entries()),\n    headers: { host: screenshotUrl.host },\n  }, { env, fetchImpl });\n\n  assert.equal(response.status, 403);\n  assert.deepEqual(response.body, { error: 'INVALID_SCREENSHOT_LINK' });\n});",
+          "new": "test('Action projection fails closed instead of issuing a capability for oversized screenshots', async () => {\n  const oversized = { base64: Buffer.alloc(2_000_001, 1).toString('base64'), path: '/tmp/oversized.png' };\n  const response = await handleGameBrowserControlRequest({\n    method: 'POST',\n    path: '/game-browser/observe',\n    body: { sessionId: 'session_123' },\n  }, {\n    env,\n    fetchImpl: async () => jsonResponse({\n      session_id: 'session_123',\n      observation: { session_id: 'session_123', screenshot: oversized },\n    }),\n  });\n\n  assert.equal(response.status, 200);\n  assert.deepEqual(response.body.observation.screenshot, {\n    available: true,\n    transported: false,\n    reason: 'SCREENSHOT_TOO_LARGE',\n    bytes: 2_000_001,\n  });\n  assert.equal(JSON.stringify(response.body).includes(oversized.base64), false);\n  assert.equal(JSON.stringify(response.body).includes(oversized.path), false);\n});"
+        }
+      ]
+    },
+    {
+      "path": "apps/game-browser-mcp/tests/helpers/fake-browser-adapter.ts",
+      "message": "test(browser): implement cached screenshot fixture seam",
+      "replacements": [
+        {
+          "old": "  async observe(session: BrowserSessionRef): Promise<BrowserObservation> { return this.#observation(this.#entry(session)); }\n\n  async input(session: BrowserSessionRef, batch: AcceptedActionBatch): Promise<BrowserBatchResult> {",
+          "new": "  async observe(session: BrowserSessionRef): Promise<BrowserObservation> { return this.#observation(this.#entry(session)); }\n\n  async latestScreenshot(session: BrowserSessionRef): Promise<{ base64: string; mimeType: 'image/png' }> {\n    this.#entry(session);\n    return { base64: 'ZmFrZQ==', mimeType: 'image/png' };\n  }\n\n  async input(session: BrowserSessionRef, batch: AcceptedActionBatch): Promise<BrowserBatchResult> {"
+        }
+      ]
+    },
+    {
+      "path": "apps/game-browser-mcp/tests/gpt-action-bridge.test.ts",
+      "message": "test(browser): cover signed cached screenshot route",
+      "replacements": [
+        {
+          "old": "import assert from 'node:assert/strict';\nimport { createServer } from 'node:http';",
+          "new": "import assert from 'node:assert/strict';\nimport { createHmac } from 'node:crypto';\nimport { createServer } from 'node:http';"
+        },
+        {
+          "old": "function fakeSurface(calls: Array<{ name: string; input: unknown }>): GameToolSurface {",
+          "new": "function fakeSurface(calls: Array<{ name: string; input: unknown }>): GameToolSurface & { latestScreenshot(input: unknown): Promise<unknown> } {"
+        },
+        {
+          "old": "    input: invoke('input'),\n    readState: invoke('readState'),",
+          "new": "    input: invoke('input'),\n    latestScreenshot: invoke('latestScreenshot'),\n    readState: invoke('readState'),"
+        },
+        {
+          "old": "    assert.equal(calls.length, before);\n  });\n});",
+          "new": "    assert.equal(calls.length, before);\n  });\n});\n\ntest('signed screenshot capability serves only the cached PNG and rejects tampering without weakening bearer routes', async () => {\n  const calls: Array<{ name: string; input: unknown }> = [];\n  const surface = {\n    ...fakeSurface(calls),\n    latestScreenshot: async (input: unknown) => {\n      calls.push({ name: 'latestScreenshot', input });\n      return { screenshot: { base64: Buffer.from('cached-frame').toString('base64'), mime_type: 'image/png', bytes: 12 } };\n    },\n  };\n\n  await withServer({\n    token: TOKEN,\n    surface,\n    registerForCommit: async () => ({ target_registration_id: 'rgc1.registration' }),\n  }, async (baseUrl) => {\n    const expires = Date.now() + 60_000;\n    const signature = createHmac('sha256', TOKEN)\n      .update(`ual:game-browser-screenshot-link:v1\\nsession_123\\n${expires}`, 'utf8')\n      .digest('hex');\n    const url = `${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&expires=${expires}&sig=${signature}`;\n\n    const image = await fetch(url);\n    assert.equal(image.status, 200);\n    assert.equal(image.headers.get('content-type'), 'image/png');\n    assert.equal(image.headers.get('cache-control'), 'private, no-store, max-age=0');\n    assert.equal(image.headers.get('x-content-type-options'), 'nosniff');\n    assert.deepEqual(Buffer.from(await image.arrayBuffer()), Buffer.from('cached-frame'));\n    assert.deepEqual(calls.filter((call) => call.name === 'latestScreenshot'), [\n      { name: 'latestScreenshot', input: { session_id: 'session_123' } },\n    ]);\n\n    const before = calls.length;\n    const tampered = await fetch(`${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&expires=${expires}&sig=${'0'.repeat(64)}`);\n    assert.equal(tampered.status, 403);\n    assert.deepEqual(await tampered.json(), { error: 'INVALID_SCREENSHOT_LINK' });\n    assert.equal(calls.length, before);\n\n    const expired = Date.now() - 1;\n    const expiredSignature = createHmac('sha256', TOKEN)\n      .update(`ual:game-browser-screenshot-link:v1\\nsession_123\\n${expired}`, 'utf8')\n      .digest('hex');\n    const expiredResponse = await fetch(`${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&expires=${expired}&sig=${expiredSignature}`);\n    assert.equal(expiredResponse.status, 403);\n    assert.equal(calls.length, before);\n\n    const bearerStillRequired = await fetch(`${baseUrl}/internal/gpt-action/observe`, {\n      method: 'POST',\n      headers: { 'content-type': 'application/json' },\n      body: JSON.stringify({ session_id: 'session_123' }),\n    });\n    assert.equal(bearerStillRequired.status, 401);\n  });\n});"
+        }
+      ]
+    }
+  ]
+}
