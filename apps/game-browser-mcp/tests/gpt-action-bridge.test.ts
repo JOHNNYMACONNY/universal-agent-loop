@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { createServer } from 'node:http';
 import test from 'node:test';
 
@@ -254,10 +254,11 @@ test('signed screenshot capability serves only the cached PNG and rejects tamper
     registerForCommit: async () => ({ target_registration_id: 'rgc1.registration' }),
   }, async (baseUrl) => {
     const expires = Date.now() + 60_000;
+    const frameSha256 = createHash('sha256').update(Buffer.from('cached-frame')).digest('hex');
     const signature = createHmac('sha256', TOKEN)
-      .update(`ual:game-browser-screenshot-link:v1\nsession_123\n${expires}`, 'utf8')
+      .update(`ual:game-browser-screenshot-link:v1\nsession_123\n${frameSha256}\n${expires}`, 'utf8')
       .digest('hex');
-    const url = `${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&expires=${expires}&sig=${signature}`;
+    const url = `${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&frame_sha256=${frameSha256}&expires=${expires}&sig=${signature}`;
 
     const image = await fetch(url);
     assert.equal(image.status, 200);
@@ -269,17 +270,25 @@ test('signed screenshot capability serves only the cached PNG and rejects tamper
       { name: 'latestScreenshot', input: { session_id: 'session_123' } },
     ]);
 
+    const staleFrameSha256 = createHash('sha256').update(Buffer.from('earlier-frame')).digest('hex');
+    const staleSignature = createHmac('sha256', TOKEN)
+      .update(`ual:game-browser-screenshot-link:v1\nsession_123\n${staleFrameSha256}\n${expires}`, 'utf8')
+      .digest('hex');
+    const stale = await fetch(`${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&frame_sha256=${staleFrameSha256}&expires=${expires}&sig=${staleSignature}`);
+    assert.equal(stale.status, 409);
+    assert.deepEqual(await stale.json(), { error: 'ACTION_REJECTED', message: 'screenshot capability no longer matches the cached frame' });
+
     const before = calls.length;
-    const tampered = await fetch(`${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&expires=${expires}&sig=${'0'.repeat(64)}`);
+    const tampered = await fetch(`${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&frame_sha256=${frameSha256}&expires=${expires}&sig=${'0'.repeat(64)}`);
     assert.equal(tampered.status, 403);
     assert.deepEqual(await tampered.json(), { error: 'INVALID_SCREENSHOT_LINK' });
     assert.equal(calls.length, before);
 
     const expired = Date.now() - 1;
     const expiredSignature = createHmac('sha256', TOKEN)
-      .update(`ual:game-browser-screenshot-link:v1\nsession_123\n${expired}`, 'utf8')
+      .update(`ual:game-browser-screenshot-link:v1\nsession_123\n${frameSha256}\n${expired}`, 'utf8')
       .digest('hex');
-    const expiredResponse = await fetch(`${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&expires=${expired}&sig=${expiredSignature}`);
+    const expiredResponse = await fetch(`${baseUrl}/internal/gpt-action/screenshot?session_id=session_123&frame_sha256=${frameSha256}&expires=${expired}&sig=${expiredSignature}`);
     assert.equal(expiredResponse.status, 403);
     assert.equal(calls.length, before);
 
@@ -291,4 +300,5 @@ test('signed screenshot capability serves only the cached PNG and rejects tamper
     assert.equal(bearerStillRequired.status, 401);
   });
 });
+
 
