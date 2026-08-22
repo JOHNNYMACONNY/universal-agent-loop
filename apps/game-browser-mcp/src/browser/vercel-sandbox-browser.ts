@@ -233,10 +233,8 @@ export class VercelSandboxBrowser implements BrowserAdapter {
 
     if (handle.currentSessionStatus() === 'running') {
       try { await this.#worker(handle, { type: 'end', session_id: session.logicalSessionId }); } catch {}
-      try { await handle.stop(); } catch {}
     }
 
     try { await handle.delete(); } catch {}
   }
 }
-
