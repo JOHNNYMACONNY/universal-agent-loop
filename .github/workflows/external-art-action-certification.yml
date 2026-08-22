@@ -1,0 +1,236 @@
+name: external-art-action-certification
+
+on:
+  push:
+    branches:
+      - chatgpt/external-art-action-certification
+
+permissions:
+  contents: read
+
+env:
+  VERCEL_TEAM_ID: team_3LfEMNVsAEbXKLoCrnzXQzrF
+  ACTION_PROJECT_ID: prj_80jo2dodxOmSSvX6muUc7Tc7wIo1
+  ACTION_URL: https://ual-gpt-action-api.vercel.app
+  TARGET_REPOSITORY: JOHNNYMACONNY/art
+  TARGET_PR: '40'
+  TARGET_BRANCH: chatgpt/desktop-controls-29
+  EXPECTED_HEAD: d51d56cd8f51752db820d7df4fea733d88aacac4
+
+jobs:
+  certify-and-repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - name: Resolve Production Action bearer without exposing it
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "${VERCEL_TOKEN:-}" ] || { echo '::error::VERCEL_TOKEN is unavailable'; exit 1; }
+          echo "::add-mask::$VERCEL_TOKEN"
+          api='https://api.vercel.com'
+          auth="Authorization: Bearer $VERCEL_TOKEN"
+          status=$(curl -sS -o /tmp/action-env.json -w '%{http_code}' -H "$auth" \
+            "$api/v10/projects/$ACTION_PROJECT_ID/env?teamId=$VERCEL_TEAM_ID")
+          [ "$status" = '200' ] || { echo "::error::Unable to list Action Production env metadata (HTTP $status)"; exit 1; }
+          env_id=$(jq -r '[.envs[] | select(.key == "UAL_ACTION_API_KEY" and ((.gitBranch // "") == "") and ((.target // []) | index("production")))] | sort_by(.updatedAt // .createdAt // 0) | last | .id // empty' /tmp/action-env.json)
+          [[ "$env_id" =~ ^[A-Za-z0-9_-]+$ ]] || { echo '::error::Production UAL_ACTION_API_KEY metadata is missing'; exit 1; }
+          status=$(curl -sS -o /tmp/action-key.json -w '%{http_code}' -H "$auth" \
+            "$api/v1/projects/$ACTION_PROJECT_ID/env/$env_id?teamId=$VERCEL_TEAM_ID")
+          [ "$status" = '200' ] || { echo "::error::Unable to resolve Production Action bearer (HTTP $status)"; exit 1; }
+          action_key=$(jq -r 'if (.value | type) == "string" then .value else "" end' /tmp/action-key.json)
+          [ -n "$action_key" ] || { echo '::error::Production Action bearer resolved empty'; exit 1; }
+          echo "::add-mask::$action_key"
+          echo "ACTION_KEY=$action_key" >> "$GITHUB_ENV"
+          rm -f /tmp/action-env.json /tmp/action-key.json
+
+      - name: Pin live PR state through Production Action
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=$(curl -sS -G -o /tmp/pr-before.json -w '%{http_code}' \
+            -H "Authorization: Bearer $ACTION_KEY" \
+            --data-urlencode "repository=$TARGET_REPOSITORY" \
+            --data-urlencode "number=$TARGET_PR" \
+            "$ACTION_URL/github/pull-request")
+          [ "$status" = '200' ] || { echo "::error::Production Action PR read failed (HTTP $status)"; cat /tmp/pr-before.json; exit 1; }
+          [ "$(jq -r '.state' /tmp/pr-before.json)" = 'open' ] || { echo '::error::Target PR is not open'; exit 1; }
+          [ "$(jq -r '.draft' /tmp/pr-before.json)" = 'true' ] || { echo '::error::Target PR unexpectedly left draft state'; exit 1; }
+          [ "$(jq -r '.head.ref' /tmp/pr-before.json)" = "$TARGET_BRANCH" ] || { echo '::error::Target PR branch changed'; exit 1; }
+          [ "$(jq -r '.head.sha' /tmp/pr-before.json)" = "$EXPECTED_HEAD" ] || { echo '::error::Target PR head changed; exact-head evidence is stale'; exit 1; }
+
+      - name: Read exact target files through Production Action
+        shell: bash
+        run: |
+          set -euo pipefail
+          read_file() {
+            local path="$1" out="$2" status
+            status=$(curl -sS -G -o "$out" -w '%{http_code}' \
+              -H "Authorization: Bearer $ACTION_KEY" \
+              --data-urlencode "repository=$TARGET_REPOSITORY" \
+              --data-urlencode "path=$path" \
+              --data-urlencode "ref=$TARGET_BRANCH" \
+              "$ACTION_URL/github/file")
+            [ "$status" = '200' ] || { echo "::error::Production Action file read failed for $path (HTTP $status)"; cat "$out"; exit 1; }
+          }
+          read_file 'godot/scripts/input/touch_controls.gd' /tmp/touch.json
+          read_file 'godot/scripts/prototype/scrap_test_block.gd' /tmp/scrap.json
+          jq -r '.content' /tmp/touch.json > /tmp/touch.gd
+          jq -r '.content' /tmp/scrap.json > /tmp/scrap.gd
+          jq -r '.blobSha' /tmp/touch.json > /tmp/touch.sha
+          jq -r '.blobSha' /tmp/scrap.json > /tmp/scrap.sha
+
+      - name: Build and validate narrow compatibility repair before any write
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          touch_path = Path('/tmp/touch.gd')
+          scrap_path = Path('/tmp/scrap.gd')
+          touch = touch_path.read_text()
+          scrap = scrap_path.read_text()
+
+          old_hint = '\t\t\t"TUNE_SIGNAL": gesture_hint_label.text = "[ HOLD LEFT MOUSE · DRAG ← / → TO TUNE ]"'
+          new_hint = '\t\t\t"TUNE_SIGNAL": gesture_hint_label.text = "[ SWIPE ↔ OR HOLD LEFT MOUSE · DRAG ← / → TO TUNE ]"'
+          if touch.count(old_hint) != 1:
+              raise SystemExit(f'expected exactly one legacy tuner hint, found {touch.count(old_hint)}')
+          touch = touch.replace(old_hint, new_hint)
+
+          old_v6 = '''\t# Verify real GAS & BRAKE touch button routes
+\ttouch_ui.gas_button.button_down.emit()
+\tassert(_throttle_input == 1.0, "FAIL: GAS button_down must set throttle input to 1.0")
+\ttouch_ui.gas_button.button_up.emit()
+\tassert(_throttle_input == 0.0, "FAIL: GAS button_up must reset throttle input to 0.0")
+\ttouch_ui.brake_button.button_down.emit()
+\tassert(_throttle_input == -1.0, "FAIL: BRAKE button_down must set throttle input to -1.0")
+\ttouch_ui.brake_button.button_up.emit()
+\tassert(_throttle_input == 0.0, "FAIL: BRAKE button_up must reset throttle input to 0.0")'''
+          new_v6 = '''\t# Verify real GAS & BRAKE touch routes with the same ScreenTouch events
+\t# consumed by the production gui_input handlers.
+\tvar gas_touch := InputEventScreenTouch.new()
+\tgas_touch.index = 101
+\tgas_touch.position = Vector2(1.0, 1.0)
+\tgas_touch.pressed = true
+\ttouch_ui.gas_button.gui_input.emit(gas_touch)
+\tassert(_throttle_input == 1.0, "FAIL: GAS ScreenTouch press must set throttle input to 1.0")
+\tgas_touch.pressed = false
+\ttouch_ui.gas_button.gui_input.emit(gas_touch)
+\tassert(_throttle_input == 0.0, "FAIL: GAS ScreenTouch release must reset throttle input to 0.0")
+\tvar brake_touch := InputEventScreenTouch.new()
+\tbrake_touch.index = 102
+\tbrake_touch.position = Vector2(1.0, 1.0)
+\tbrake_touch.pressed = true
+\ttouch_ui.brake_button.gui_input.emit(brake_touch)
+\tassert(_throttle_input == -1.0, "FAIL: BRAKE ScreenTouch press must set throttle input to -1.0")
+\tbrake_touch.pressed = false
+\ttouch_ui.brake_button.gui_input.emit(brake_touch)
+\tassert(_throttle_input == 0.0, "FAIL: BRAKE ScreenTouch release must reset throttle input to 0.0")'''
+          if scrap.count(old_v6) != 1:
+              raise SystemExit(f'expected exactly one obsolete V6 button oracle, found {scrap.count(old_v6)}')
+          scrap = scrap.replace(old_v6, new_v6)
+
+          old_ticket = '''\tassert(touch_ui.gesture_hint_label.text == "[ SWIPE ↔ TO TUNE FREQUENCY ]", "FAIL: UI hint text must be [ SWIPE ↔ TO TUNE FREQUENCY ]")
+\tprint("[TICKET 03 TEST 1 PASSED] UI prompt hint verified: [ SWIPE ↔ TO TUNE FREQUENCY ]")'''
+          new_ticket = '''\tvar tuner_hint: String = touch_ui.gesture_hint_label.text
+\tassert(tuner_hint.contains("SWIPE"), "FAIL: Tuner hint must preserve touch swipe guidance")
+\tassert(tuner_hint.contains("LEFT MOUSE") and tuner_hint.contains("DRAG"), "FAIL: Tuner hint must expose desktop mouse-drag guidance")
+\tprint("[TICKET 03 TEST 1 PASSED] UI prompt exposes touch + desktop tuning affordances: %s" % tuner_hint)'''
+          if scrap.count(old_ticket) != 1:
+              raise SystemExit(f'expected exactly one obsolete Ticket03 hint oracle, found {scrap.count(old_ticket)}')
+          scrap = scrap.replace(old_ticket, new_ticket)
+
+          if 'button_down.emit()' in new_v6 or 'button_up.emit()' in new_v6:
+              raise SystemExit('obsolete Button hold oracle survived replacement')
+          if '[ SWIPE ↔ OR HOLD LEFT MOUSE · DRAG ← / → TO TUNE ]' not in touch:
+              raise SystemExit('combined tuner hint missing after replacement')
+
+          touch_path.write_text(touch)
+          scrap_path.write_text(scrap)
+          PY
+
+      - name: Write production hint repair through Production Action
+        id: touch_write
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch_sha=$(cat /tmp/touch.sha)
+          jq -n \
+            --arg repository "$TARGET_REPOSITORY" \
+            --arg path 'godot/scripts/input/touch_controls.gd' \
+            --arg branch "$TARGET_BRANCH" \
+            --arg message 'fix: preserve touch and desktop tuner guidance' \
+            --rawfile content /tmp/touch.gd \
+            --arg sha "$touch_sha" \
+            '{repository:$repository,path:$path,branch:$branch,message:$message,content:$content,sha:$sha}' > /tmp/touch-write.json
+          status=$(curl -sS -o /tmp/touch-write-response.json -w '%{http_code}' \
+            -X PUT -H "Authorization: Bearer $ACTION_KEY" -H 'Content-Type: application/json' \
+            --data @/tmp/touch-write.json "$ACTION_URL/github/file")
+          if [ "$status" != '200' ] && [ "$status" != '201' ]; then
+            echo "::error::Production Action touch_controls write failed (HTTP $status)"
+            cat /tmp/touch-write-response.json
+            exit 1
+          fi
+          commit_sha=$(jq -r '.commitSha // empty' /tmp/touch-write-response.json)
+          [[ "$commit_sha" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Touch repair returned no exact commit SHA'; exit 1; }
+          echo "commit_sha=$commit_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write compatibility-oracle repair through Production Action
+        id: scrap_write
+        shell: bash
+        run: |
+          set -euo pipefail
+          scrap_sha=$(cat /tmp/scrap.sha)
+          jq -n \
+            --arg repository "$TARGET_REPOSITORY" \
+            --arg path 'godot/scripts/prototype/scrap_test_block.gd' \
+            --arg branch "$TARGET_BRANCH" \
+            --arg message 'test: align legacy input oracles with physical routes' \
+            --rawfile content /tmp/scrap.gd \
+            --arg sha "$scrap_sha" \
+            '{repository:$repository,path:$path,branch:$branch,message:$message,content:$content,sha:$sha}' > /tmp/scrap-write.json
+          status=$(curl -sS -o /tmp/scrap-write-response.json -w '%{http_code}' \
+            -X PUT -H "Authorization: Bearer $ACTION_KEY" -H 'Content-Type: application/json' \
+            --data @/tmp/scrap-write.json "$ACTION_URL/github/file")
+          if [ "$status" != '200' ] && [ "$status" != '201' ]; then
+            echo "::error::Production Action compatibility write failed (HTTP $status)"
+            cat /tmp/scrap-write-response.json
+            exit 1
+          fi
+          commit_sha=$(jq -r '.commitSha // empty' /tmp/scrap-write-response.json)
+          [[ "$commit_sha" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Compatibility repair returned no exact commit SHA'; exit 1; }
+          echo "commit_sha=$commit_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Verify PR advanced to the Action-written exact head
+        shell: bash
+        env:
+          EXPECTED_NEW_HEAD: ${{ steps.scrap_write.outputs.commit_sha }}
+          FIRST_WRITE_SHA: ${{ steps.touch_write.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          status=$(curl -sS -G -o /tmp/pr-after.json -w '%{http_code}' \
+            -H "Authorization: Bearer $ACTION_KEY" \
+            --data-urlencode "repository=$TARGET_REPOSITORY" \
+            --data-urlencode "number=$TARGET_PR" \
+            "$ACTION_URL/github/pull-request")
+          [ "$status" = '200' ] || { echo "::error::Production Action post-write PR read failed (HTTP $status)"; exit 1; }
+          actual=$(jq -r '.head.sha' /tmp/pr-after.json)
+          [ "$actual" = "$EXPECTED_NEW_HEAD" ] || { echo "::error::PR head does not match second Action write ($actual != $EXPECTED_NEW_HEAD)"; exit 1; }
+          jq -n \
+            --arg repository "$TARGET_REPOSITORY" \
+            --arg pr "$TARGET_PR" \
+            --arg originalHead "$EXPECTED_HEAD" \
+            --arg firstWrite "$FIRST_WRITE_SHA" \
+            --arg finalHead "$actual" \
+            '{repository:$repository,pr:($pr|tonumber),originalHead:$originalHead,firstWriteCommit:$firstWrite,finalHead:$finalHead,productionActionWrite:true}' \
+            > external-art-action-certification-evidence.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: external-art-action-certification
+          path: external-art-action-certification-evidence.json
+          if-no-files-found: ignore
