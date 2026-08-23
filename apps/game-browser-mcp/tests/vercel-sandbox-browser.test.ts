@@ -25,7 +25,9 @@ class FakeHandle implements SandboxHandle {
           ? { ok: true, status: 'COMPLETE', heldKeys: [], heldPointerButtons: [] }
           : request.type === 'read_state'
             ? { ok: true, value: { score: 1 } }
-            : { ok: true };
+            : request.type === 'screenshot_latest'
+              ? { ok: true, screenshot: { base64: Buffer.from('png-bytes').toString('base64'), mimeType: 'image/png' } }
+              : { ok: true };
     return { exitCode: 0, stdout: async () => JSON.stringify(payload), stderr: async () => '' };
   }
   currentSessionStatus() { return this.status; }
@@ -96,6 +98,16 @@ test('readState uses closed worker operation rather than exposing eval on adapte
   assert.deepEqual(await browser.readState({ logicalSessionId: 'session_1', sandboxId: 'gbr-session_1' }, '/score'), { score: 1 });
   const decoded = JSON.parse(Buffer.from(factory.handle.calls.at(-1)!.args[1]!, 'base64url').toString('utf8'));
   assert.deepEqual(decoded, { type: 'read_state', session_id: 'session_1', path: '/score' });
+});
+
+test('latestScreenshot reads the cached frame directly instead of depending on a snapshot worker operation', async () => {
+  const factory = new FakeFactory();
+  const browser = new VercelSandboxBrowser({ factory, snapshotId: 'snap_1' });
+  await browser.latestScreenshot({ logicalSessionId: 'session_1', sandboxId: 'gbr-session_1' });
+  const call = factory.handle.calls.at(-1)!;
+  assert.equal(call.cmd, 'node');
+  assert.notEqual(call.args[0], '/vercel/sandbox/worker.mjs');
+  assert.equal(call.args.some((arg) => arg.includes('screenshot_latest')), false);
 });
 
 test('end deletes the running persistent sandbox directly so normal teardown does not create a stop snapshot', async () => {
