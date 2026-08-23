@@ -107,6 +107,7 @@ export function createProductionRuntimeApp(env: Record<string, string | undefine
     throw new Error('production configuration requires RUNTIME_ALLOWED_HOSTS, VERCEL_URL, or VERCEL_PROJECT_PRODUCTION_URL');
   }
 
+  // Retain strict parsing for compatibility while coarse production rate limiting moves to Vercel WAF.
   const sessionStartsPerMinute = positiveRateLimit(env, 'SESSION_STARTS_PER_MINUTE', 6);
   const actionCallsPerMinute = positiveRateLimit(env, 'ACTION_CALLS_PER_MINUTE', 120);
 
@@ -140,6 +141,8 @@ export function createProductionRuntimeApp(env: Record<string, string | undefine
     principals,
     resolveDns,
     limits: config.limits,
+    // Coarse production rate limiting is configured at Vercel/WAF. These values remain
+    // available to injected/test limiters but production does not depend on a shared DB.
     rateLimits,
   });
 
