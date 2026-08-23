@@ -5,10 +5,9 @@ import { toNodeHandler } from '@modelcontextprotocol/node';
 
 import { createRegistrationHandler } from './admin/register-deployment.js';
 import { SignedBearerPrincipalResolver, StaticPrincipalResolver, type PrincipalResolver } from './auth/principal.js';
-import { VercelSandboxBrowser } from './browser/vercel-sandbox-browser.js';
+import { VercelSandboxBrowser, sandboxName } from './browser/vercel-sandbox-browser.js';
 import { createGptActionBridgeRouter, deriveGptActionBridgeBinding } from './bridge/gpt-action-bridge.js';
 import { loadRuntimeConfig } from './env.js';
-import { RuntimeError } from './errors.js';
 import { createGameMcpHandler, type GameToolSurface } from './mcp.js';
 import { CapabilityRegistrationStore, RegistrationCapabilityCodec } from './provenance/registration-capability.js';
 import { RegistrationService } from './provenance/registration-service.js';
@@ -108,7 +107,6 @@ export function createProductionRuntimeApp(env: Record<string, string | undefine
     throw new Error('production configuration requires RUNTIME_ALLOWED_HOSTS, VERCEL_URL, or VERCEL_PROJECT_PRODUCTION_URL');
   }
 
-  // Retain strict parsing for compatibility while coarse production rate limiting moves to Vercel WAF.
   const sessionStartsPerMinute = positiveRateLimit(env, 'SESSION_STARTS_PER_MINUTE', 6);
   const actionCallsPerMinute = positiveRateLimit(env, 'ACTION_CALLS_PER_MINUTE', 120);
 
@@ -142,8 +140,6 @@ export function createProductionRuntimeApp(env: Record<string, string | undefine
     principals,
     resolveDns,
     limits: config.limits,
-    // Coarse production rate limiting is configured at Vercel/WAF. These values remain
-    // available to injected/test limiters but production does not depend on a shared DB.
     rateLimits,
   });
 
@@ -170,16 +166,10 @@ export function createProductionRuntimeApp(env: Record<string, string | undefine
     }
     : undefined;
   const readScreenshot = bridgeBinding
-    ? async (sessionId: string) => {
-      const record = await sessions.get(sessionId);
-      if (!record) throw new RuntimeError('SESSION_NOT_FOUND', 'session not found');
-      if (record.owner_binding !== bridgeBinding) throw new RuntimeError('AUTH_CONTEXT_UNAVAILABLE', 'session ownership mismatch');
-      const nowMs = Date.now();
-      if (new Date(record.absolute_expires_at).getTime() <= nowMs || new Date(record.idle_expires_at).getTime() <= nowMs) {
-        throw new RuntimeError('SESSION_EXPIRED', 'session idle/absolute lifetime expired');
-      }
-      return browser.latestScreenshot({ logicalSessionId: record.session_id, sandboxId: record.sandbox_id });
-    }
+    ? async (sessionId: string) => browser.latestScreenshot({
+      logicalSessionId: sessionId,
+      sandboxId: sandboxName(sessionId),
+    })
     : undefined;
   const gptActionBridgeHandler = createGptActionBridgeRouter({
     token: bridgeToken,
