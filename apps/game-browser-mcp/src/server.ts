@@ -5,10 +5,9 @@ import { toNodeHandler } from '@modelcontextprotocol/node';
 
 import { createRegistrationHandler } from './admin/register-deployment.js';
 import { SignedBearerPrincipalResolver, StaticPrincipalResolver, type PrincipalResolver } from './auth/principal.js';
-import { VercelSandboxBrowser } from './browser/vercel-sandbox-browser.js';
+import { VercelSandboxBrowser, sandboxName } from './browser/vercel-sandbox-browser.js';
 import { createGptActionBridgeRouter, deriveGptActionBridgeBinding } from './bridge/gpt-action-bridge.js';
 import { loadRuntimeConfig } from './env.js';
-import { RuntimeError } from './errors.js';
 import { createGameMcpHandler, type GameToolSurface } from './mcp.js';
 import { CapabilityRegistrationStore, RegistrationCapabilityCodec } from './provenance/registration-capability.js';
 import { RegistrationService } from './provenance/registration-service.js';
@@ -23,6 +22,8 @@ export interface RuntimeAppOptions {
 }
 
 export type GameToolSurfaceFactory = (authorization: string | undefined) => GameToolSurface;
+
+type ScreenshotReaderBrowser = Pick<VercelSandboxBrowser, 'latestScreenshot'>;
 
 const fixtureRoot = fileURLToPath(new URL('../fixtures/game/', import.meta.url));
 
@@ -63,6 +64,13 @@ export function createRuntimeApp(services: GameToolSurface | GameToolSurfaceFact
     void nodeHandler(req, res, req.body);
   });
   return app;
+}
+
+export function createSignedScreenshotReader(browser: ScreenshotReaderBrowser) {
+  return async (sessionId: string) => browser.latestScreenshot({
+    logicalSessionId: sessionId,
+    sandboxId: sandboxName(sessionId),
+  });
 }
 
 function required(env: Record<string, string | undefined>, name: string): string {
@@ -170,16 +178,7 @@ export function createProductionRuntimeApp(env: Record<string, string | undefine
     }
     : undefined;
   const readScreenshot = bridgeBinding
-    ? async (sessionId: string) => {
-      const record = await sessions.get(sessionId);
-      if (!record) throw new RuntimeError('SESSION_NOT_FOUND', 'session not found');
-      if (record.owner_binding !== bridgeBinding) throw new RuntimeError('AUTH_CONTEXT_UNAVAILABLE', 'session ownership mismatch');
-      const nowMs = Date.now();
-      if (new Date(record.absolute_expires_at).getTime() <= nowMs || new Date(record.idle_expires_at).getTime() <= nowMs) {
-        throw new RuntimeError('SESSION_EXPIRED', 'session idle/absolute lifetime expired');
-      }
-      return browser.latestScreenshot({ logicalSessionId: record.session_id, sandboxId: record.sandbox_id });
-    }
+    ? createSignedScreenshotReader(browser)
     : undefined;
   const gptActionBridgeHandler = createGptActionBridgeRouter({
     token: bridgeToken,
