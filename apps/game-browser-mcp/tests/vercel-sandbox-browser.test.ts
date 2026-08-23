@@ -13,6 +13,9 @@ class FakeHandle implements SandboxHandle {
   deleteCalls = 0;
   async runCommand(cmd: string, args: string[]) {
     this.calls.push({ cmd, args });
+    if (cmd === 'node' && args[0] === '-e') {
+      return { exitCode: 0, stdout: async () => Buffer.from('png-bytes').toString('base64'), stderr: async () => '' };
+    }
     const request = JSON.parse(Buffer.from(args[1]!, 'base64url').toString('utf8')) as { type: string };
     if (request.type === 'end' && this.failEndWorker) {
       return { exitCode: 1, stdout: async () => JSON.stringify({ ok: false, error: 'INTERNAL_ERROR', detail: 'simulated worker cleanup failure' }), stderr: async () => '' };
@@ -25,9 +28,7 @@ class FakeHandle implements SandboxHandle {
           ? { ok: true, status: 'COMPLETE', heldKeys: [], heldPointerButtons: [] }
           : request.type === 'read_state'
             ? { ok: true, value: { score: 1 } }
-            : request.type === 'screenshot_latest'
-              ? { ok: true, screenshot: { base64: Buffer.from('png-bytes').toString('base64'), mimeType: 'image/png' } }
-              : { ok: true };
+            : { ok: true };
     return { exitCode: 0, stdout: async () => JSON.stringify(payload), stderr: async () => '' };
   }
   currentSessionStatus() { return this.status; }
@@ -103,11 +104,15 @@ test('readState uses closed worker operation rather than exposing eval on adapte
 test('latestScreenshot reads the cached frame directly instead of depending on a snapshot worker operation', async () => {
   const factory = new FakeFactory();
   const browser = new VercelSandboxBrowser({ factory, snapshotId: 'snap_1' });
-  await browser.latestScreenshot({ logicalSessionId: 'session_1', sandboxId: 'gbr-session_1' });
+  const screenshot = await browser.latestScreenshot({ logicalSessionId: 'session_1', sandboxId: 'gbr-session_1' });
+  assert.deepEqual(screenshot, { base64: Buffer.from('png-bytes').toString('base64'), mimeType: 'image/png' });
   const call = factory.handle.calls.at(-1)!;
   assert.equal(call.cmd, 'node');
-  assert.notEqual(call.args[0], '/vercel/sandbox/worker.mjs');
+  assert.equal(call.args[0], '-e');
+  assert.equal(call.args.at(-1), 'session_1');
+  assert.match(call.args[1]!, /\/vercel\/sandbox\/\.game-browser/);
   assert.equal(call.args.some((arg) => arg.includes('screenshot_latest')), false);
+  assert.equal(factory.handle.calls.some((entry) => entry.cmd === 'sh' || entry.args.includes('-c')), false);
 });
 
 test('end deletes the running persistent sandbox directly so normal teardown does not create a stop snapshot', async () => {
