@@ -23,6 +23,8 @@ export interface RuntimeAppOptions {
 
 export type GameToolSurfaceFactory = (authorization: string | undefined) => GameToolSurface;
 
+type ScreenshotReaderBrowser = Pick<VercelSandboxBrowser, 'latestScreenshot'>;
+
 const fixtureRoot = fileURLToPath(new URL('../fixtures/game/', import.meta.url));
 
 export const PRODUCTION_ENVIRONMENT_NAMES = [
@@ -62,6 +64,13 @@ export function createRuntimeApp(services: GameToolSurface | GameToolSurfaceFact
     void nodeHandler(req, res, req.body);
   });
   return app;
+}
+
+export function createSignedScreenshotReader(browser: ScreenshotReaderBrowser) {
+  return async (sessionId: string) => browser.latestScreenshot({
+    logicalSessionId: sessionId,
+    sandboxId: sandboxName(sessionId),
+  });
 }
 
 function required(env: Record<string, string | undefined>, name: string): string {
@@ -169,10 +178,7 @@ export function createProductionRuntimeApp(env: Record<string, string | undefine
     }
     : undefined;
   const readScreenshot = bridgeBinding
-    ? async (sessionId: string) => browser.latestScreenshot({
-      logicalSessionId: sessionId,
-      sandboxId: sandboxName(sessionId),
-    })
+    ? createSignedScreenshotReader(browser)
     : undefined;
   const gptActionBridgeHandler = createGptActionBridgeRouter({
     token: bridgeToken,
