@@ -1,10 +1,9 @@
 import { createServer, request as httpRequest } from 'node:http';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { createProductionRuntimeApp, PRODUCTION_ENVIRONMENT_NAMES } from '../src/server.js';
+import { createProductionRuntimeApp, createSignedScreenshotReader, PRODUCTION_ENVIRONMENT_NAMES } from '../src/server.js';
 
 const SHA = 'a'.repeat(40);
 const ENV = {
@@ -58,15 +57,19 @@ test('production composition fails closed when required environment is missing',
   assert.throws(() => createProductionRuntimeApp({}), /VERCEL_API_TOKEN|configuration/i);
 });
 
-test('signed screenshot capability performs one sandbox read without a redundant session-store round trip', () => {
-  const source = readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8');
-  const start = source.indexOf('const readScreenshot = bridgeBinding');
-  const end = source.indexOf('const gptActionBridgeHandler', start);
-  assert.notEqual(start, -1);
-  assert.notEqual(end, -1);
-  const block = source.slice(start, end);
-  assert.doesNotMatch(block, /sessions\.get\(sessionId\)/);
-  assert.match(block, /browser\.latestScreenshot/);
+test('signed screenshot reader performs exactly one sandbox read with the deterministic session reference', async () => {
+  const calls: Array<{ logicalSessionId: string; sandboxId: string }> = [];
+  const expected = { base64: Buffer.from('png').toString('base64'), mimeType: 'image/png' as const };
+  const reader = createSignedScreenshotReader({
+    async latestScreenshot(session) {
+      calls.push(session);
+      return expected;
+    },
+  });
+
+  const actual = await reader('Session_123');
+  assert.deepEqual(actual, expected);
+  assert.deepEqual(calls, [{ logicalSessionId: 'Session_123', sandboxId: 'gbr-session_123' }]);
 });
 
 test('production accepts the Vercel stable project URL without an extra managed host variable', async () => {
