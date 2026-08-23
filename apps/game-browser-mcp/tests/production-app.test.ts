@@ -1,4 +1,5 @@
 import { createServer, request as httpRequest } from 'node:http';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -55,6 +56,17 @@ test('production composition is Vercel-only and declares every required secret/c
 
 test('production composition fails closed when required environment is missing', () => {
   assert.throws(() => createProductionRuntimeApp({}), /VERCEL_API_TOKEN|configuration/i);
+});
+
+test('signed screenshot capability performs one sandbox read without a redundant session-store round trip', () => {
+  const source = readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8');
+  const start = source.indexOf('const readScreenshot = bridgeBinding');
+  const end = source.indexOf('const gptActionBridgeHandler', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const block = source.slice(start, end);
+  assert.doesNotMatch(block, /sessions\.get\(sessionId\)/);
+  assert.match(block, /browser\.latestScreenshot/);
 });
 
 test('production accepts the Vercel stable project URL without an extra managed host variable', async () => {
