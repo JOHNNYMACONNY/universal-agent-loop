@@ -620,7 +620,11 @@ jobs:
           image_meta=$(curl -sS -o /tmp/bridge-screenshot.png -w '%{http_code} %{content_type}' "$screenshot_url")
           image_status=${image_meta%% *}
           image_type=${image_meta#* }
-          [ "$image_status" = '200' ] || { echo "::error::Signed screenshot fetch failed (HTTP $image_status)"; exit 1; }
+          if [ "$image_status" != '200' ]; then
+            echo "::error::Signed screenshot fetch failed (HTTP $image_status)"
+            jq -r '.error // empty, .message // empty' /tmp/bridge-screenshot.png 2>/dev/null | head -c 2048 || true
+            exit 1
+          fi
           [ "$image_type" = 'image/png' ] || { echo "::error::Signed screenshot fetch returned unexpected content type"; exit 1; }
           [ -s /tmp/bridge-screenshot.png ] || { echo "::error::Signed screenshot fetch returned an empty image"; exit 1; }
           actual_frame_sha256=$(sha256sum /tmp/bridge-screenshot.png | awk '{print $1}')
