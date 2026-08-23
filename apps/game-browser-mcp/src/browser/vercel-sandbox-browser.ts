@@ -14,6 +14,14 @@ import type {
 } from './browser-adapter.js';
 
 const VERCEL_MIN_SNAPSHOT_EXPIRATION_MS = 24 * 60 * 60_000;
+const LOGICAL_SESSION_ID = /^[A-Za-z0-9_.-]{1,128}$/;
+const READ_CACHED_SCREENSHOT = [
+  "const { readFileSync } = require('node:fs');",
+  "const session = process.argv[1] ?? '';",
+  "if (!/^[A-Za-z0-9_.-]{1,128}$/.test(session)) process.exit(2);",
+  "const root = process.env.GBR_ROOT || '/vercel/sandbox/.game-browser';",
+  "process.stdout.write(readFileSync(`${root}/${session}-latest.png`).toString('base64'));",
+].join(' ');
 
 export interface SandboxCommandResult {
   exitCode: number;
@@ -188,10 +196,11 @@ export class VercelSandboxBrowser implements BrowserAdapter {
   }
 
   async latestScreenshot(session: BrowserSessionRef): Promise<{ base64: string; mimeType: 'image/png' }> {
+    if (!LOGICAL_SESSION_ID.test(session.logicalSessionId)) throw new Error('latest screenshot unavailable');
     const handle = await this.#factory.get(session.sandboxId);
-    const payload = await this.#worker(handle, { type: 'screenshot_latest', session_id: session.logicalSessionId });
-    const base64 = payload?.screenshot?.base64;
-    if (typeof base64 !== 'string' || base64.length === 0) throw new Error('latest screenshot unavailable');
+    const result = await handle.runCommand('node', ['-e', READ_CACHED_SCREENSHOT, session.logicalSessionId]);
+    const base64 = (await result.stdout()).trim();
+    if (result.exitCode !== 0 || base64.length === 0) throw new Error('latest screenshot unavailable');
     return { base64, mimeType: 'image/png' };
   }
 
