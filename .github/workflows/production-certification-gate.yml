@@ -65,7 +65,7 @@ jobs:
               existing = await github.rest.git.getRef({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                ref: `tags/${tag}`,
+                ref: `tags/production-certified-${run.head_sha}`,
               });
             } catch (error) {
               if (error.status !== 404) throw error;
@@ -83,7 +83,7 @@ jobs:
             await github.rest.git.createRef({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              ref: `refs/tags/${tag}`,
+              ref: `refs/tags/production-certified-${run.head_sha}`,
               sha: run.head_sha,
             });
             core.info(`Certified exact Production SHA ${run.head_sha} as ${tag}`);
