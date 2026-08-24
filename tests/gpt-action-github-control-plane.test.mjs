@@ -312,6 +312,7 @@ test('create branch rejects non-chatgpt names before GitHub access', async () =>
 
 test('file write encodes UTF-8 and sends optional current blob sha on a chatgpt branch', async () => {
   const captures = [];
+  const exactBlobSha = '0123456789abcdef0123456789abcdef01234567';
   const fetchImpl = queueFetch([
     jsonResponse({ full_name: 'JOHNNYMACONNY/universal-agent-loop', default_branch: 'main' }),
     jsonResponse({
@@ -328,7 +329,7 @@ test('file write encodes UTF-8 and sends optional current blob sha on a chatgpt 
         branch: 'chatgpt/feature',
         message: 'feat: update file',
         content: 'hello\n',
-        sha: 'old-blob',
+        sha: exactBlobSha,
       },
     }),
     { env, fetchImpl },
@@ -337,7 +338,7 @@ test('file write encodes UTF-8 and sends optional current blob sha on a chatgpt 
   const payload = JSON.parse(captures[1].options.body);
   assert.equal(payload.branch, 'chatgpt/feature');
   assert.equal(payload.message, 'feat: update file');
-  assert.equal(payload.sha, 'old-blob');
+  assert.equal(payload.sha, exactBlobSha);
   assert.equal(Buffer.from(payload.content, 'base64').toString('utf8'), 'hello\n');
   assert.deepEqual(response.body, {
     repository: 'JOHNNYMACONNY/universal-agent-loop',
