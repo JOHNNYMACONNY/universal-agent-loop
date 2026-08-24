@@ -39,6 +39,24 @@ const baseBody = {
   content: 'updated\n',
 };
 
+test('OpenAPI requires the same exact 40-hex blob sha provenance as the server', async () => {
+  const response = await handleActionRequest({
+    method: 'GET',
+    path: '/openapi.json',
+    searchParams: {},
+    headers: { host: 'preview.example.test' },
+  }, {
+    env,
+    fetchImpl: async () => { throw new Error('unexpected fetch'); },
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(
+    response.body.components.schemas.WriteRepositoryFileRequest.properties.sha.pattern,
+    '^[A-Fa-f0-9]{40}$',
+  );
+});
+
 test('existing-file update rejects the previously observed truncated blob sha before GitHub access', async () => {
   const truncatedObservedSha = '7a4c6eb69559a5a4bd51f4da5addbafe18c384';
   let calls = 0;
