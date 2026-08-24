@@ -1,0 +1,15 @@
+{
+  "planVersion": 1,
+  "operations": [
+    {
+      "path": ".github/workflows/production-runtime-reconcile.yml",
+      "message": "Run Production reconciliation for every exact main push",
+      "replacements": [
+        {
+          "old": "  push:\n    branches: [main]\n    paths:\n      - '.github/workflows/production-runtime-reconcile.yml'\n      - '.github/workflows/game-browser-mcp-bootstrap.yml'\n      - 'apps/game-browser-mcp/**'\n      - 'apps/gpt-action-api/**'\n",
+          "new": "  push:\n    branches: [main]\n"
+        }
+      ]
+    }
+  ]
+}
