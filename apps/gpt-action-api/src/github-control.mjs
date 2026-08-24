@@ -5,6 +5,23 @@ const MAX_PATH_LENGTH = 1024;
 const MAX_COMMIT_MESSAGE = 300;
 const MAX_PR_TITLE = 256;
 const MAX_PR_BODY = 20_000;
+const SAFE_UPSTREAM_ERROR_CODES = new Set([
+  'missing',
+  'missing_field',
+  'invalid',
+  'already_exists',
+  'unprocessable',
+  'custom',
+]);
+const SAFE_UPSTREAM_ERROR_MESSAGES = new Set([
+  'sha does not match',
+  "sha wasn't supplied",
+  'Update is not a fast forward',
+  'Validation Failed',
+  'Resource not accessible by personal access token',
+  'Git Repository is empty.',
+  'Conflict',
+]);
 
 function result(status, body, headers = {}) {
   return {
@@ -105,15 +122,44 @@ function boundedText(value, max, { allowEmpty = false } = {}) {
   return value;
 }
 
-function upstreamError(status) {
-  if (status === 401 || status === 403) return result(403, { error: 'GITHUB_CONTROL_FORBIDDEN', status });
-  if (status === 404) return result(404, { error: 'GITHUB_CONTROL_NOT_FOUND', status });
-  if (status === 405 || status === 409) return result(409, { error: 'GITHUB_CONTROL_CONFLICT', status });
-  if (status === 422) return result(422, { error: 'GITHUB_CONTROL_VALIDATION_ERROR', status });
-  return result(502, { error: 'GITHUB_CONTROL_UPSTREAM_ERROR', status });
+function sanitizedUpstreamDiagnostics(payload) {
+  const diagnostics = {};
+  const message = typeof payload?.message === 'string' ? payload.message.trim() : '';
+  if (SAFE_UPSTREAM_ERROR_MESSAGES.has(message)) diagnostics.upstreamMessage = message;
+  if (Array.isArray(payload?.errors)) {
+    const safeCode = payload.errors
+      .map((entry) => entry?.code)
+      .find((code) => typeof code === 'string' && SAFE_UPSTREAM_ERROR_CODES.has(code));
+    if (safeCode) diagnostics.upstreamCode = safeCode;
+  }
+  return diagnostics;
 }
 
-async function githubJson(url, { token, fetchImpl, method = 'GET', body, expected = [200] }) {
+async function readUpstreamDiagnostics(upstream) {
+  try {
+    return sanitizedUpstreamDiagnostics(await upstream.json());
+  } catch {
+    return {};
+  }
+}
+
+function upstreamError(status, diagnostics = {}) {
+  const details = { status, ...diagnostics };
+  if (status === 401 || status === 403) return result(403, { error: 'GITHUB_CONTROL_FORBIDDEN', ...details });
+  if (status === 404) return result(404, { error: 'GITHUB_CONTROL_NOT_FOUND', ...details });
+  if (status === 405 || status === 409) return result(409, { error: 'GITHUB_CONTROL_CONFLICT', ...details });
+  if (status === 422) return result(422, { error: 'GITHUB_CONTROL_VALIDATION_ERROR', ...details });
+  return result(502, { error: 'GITHUB_CONTROL_UPSTREAM_ERROR', ...details });
+}
+
+async function githubJson(url, {
+  token,
+  fetchImpl,
+  method = 'GET',
+  body,
+  expected = [200],
+  diagnosticErrors = false,
+}) {
   let upstream;
   try {
     upstream = await fetchImpl(url, {
@@ -131,7 +177,10 @@ async function githubJson(url, { token, fetchImpl, method = 'GET', body, expecte
   } catch {
     return { error: result(502, { error: 'GITHUB_CONTROL_UPSTREAM_ERROR', status: 0 }) };
   }
-  if (!expected.includes(upstream.status)) return { error: upstreamError(upstream.status) };
+  if (!expected.includes(upstream.status)) {
+    const diagnostics = diagnosticErrors ? await readUpstreamDiagnostics(upstream) : {};
+    return { error: upstreamError(upstream.status, diagnostics) };
+  }
   let payload;
   try {
     payload = await upstream.json();
@@ -382,9 +431,7 @@ async function writeRepositoryFile(request, env, fetchImpl) {
   if (message === null) return result(400, { error: 'INVALID_COMMIT_MESSAGE' });
   if (typeof body.content !== 'string') return result(400, { error: 'INVALID_FILE_CONTENT' });
   if (Buffer.byteLength(body.content, 'utf8') > MAX_FILE_BYTES) return result(413, { error: 'FILE_TOO_LARGE' });
-  if (body.sha !== undefined && (typeof body.sha !== 'string' || body.sha.length > 100 || body.sha.length === 0)) {
-    return result(400, { error: 'INVALID_BLOB_SHA' });
-  }
+  if (body.sha !== undefined && !exactCommitSha(body.sha)) return result(400, { error: 'INVALID_BLOB_SHA' });
   const prepared = prepareBodyRepository(body, env);
   if (prepared.error) return prepared.error;
   const context = { token: prepared.config.token, fetchImpl };
@@ -401,7 +448,7 @@ async function writeRepositoryFile(request, env, fetchImpl) {
   };
   const written = await githubJson(
     `${API}/repos/${prepared.repositoryInfo.owner}/${prepared.repositoryInfo.repo}/contents/${encodePath(body.path)}`,
-    { ...context, method: 'PUT', body: payload, expected: [200, 201] },
+    { ...context, method: 'PUT', body: payload, expected: [200, 201], diagnosticErrors: true },
   );
   if (written.error) return written.error;
   return result(written.status, {

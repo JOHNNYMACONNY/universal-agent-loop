@@ -368,7 +368,7 @@ function openApiSchema(request, env) {
           required: ['repository', 'path', 'branch', 'message', 'content'],
           properties: {
             repository: { type: 'string' }, path: { type: 'string', maxLength: 1024 }, branch: { type: 'string', pattern: '^chatgpt/.+' },
-            message: { type: 'string', maxLength: 300 }, content: { type: 'string' }, sha: { type: 'string' },
+            message: { type: 'string', maxLength: 300 }, content: { type: 'string' }, sha: { type: 'string', pattern: '^[A-Fa-f0-9]{40}$' },
           },
           additionalProperties: false,
         },
