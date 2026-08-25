@@ -149,3 +149,16 @@ test('skill has explicit stop conditions and rollover distinction', async () => 
   assert.match(markdown, /ROLLOVER_REQUIRED/);
   assert.match(markdown, /do not stop because.*(?:attempt|skill|commit|test|review)/i);
 });
+
+test('standalone ChatGPT skill self-bootstraps from the canonical GitHub workflow', async () => {
+  const markdown = await loadSkill();
+
+  assert.match(markdown, /\$autonomous-dev-loop/i);
+  assert.match(markdown, /continue autonomously|take this repository to PASS/i);
+  assert.match(markdown, /JOHNNYMACONNY\/universal-agent-loop/i);
+  assert.match(markdown, /skills\/autonomous-dev-loop\/SKILL\.md/i);
+  assert.match(markdown, /before (?:starting|resuming).*substantive/i);
+  assert.match(markdown, /(?:current|latest).*canonical/i);
+  assert.match(markdown, /(?:fetched|retrieved).*authoritative|authoritative.*(?:fetched|retrieved)/i);
+  assert.match(markdown, /(?:GitHub|web).*unavailable[^\n]*(?:BLOCKED_ENVIRONMENT|external blocker)/i);
+});

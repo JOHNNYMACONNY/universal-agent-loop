@@ -7,6 +7,14 @@ description: Use when ChatGPT must autonomously implement, repair, or continue s
 
 ChatGPT companion skill; UAL-aligned, **not a full UAL adapter** without reference engine/local state. `protocol/` is source of truth.
 
+## Invocation and bootstrap
+
+Treat these as explicit requests to run the skill: `$autonomous-dev-loop <repository>`, `$autonomous-dev-loop continue`, `use autonomous dev loop`, `continue autonomously`, and `take this repository to PASS`. If a repository is supplied, use it. Otherwise infer the active repository/workstream from the current conversation and available GitHub evidence; do not ask for facts that can be resolved from repository state.
+
+Before starting or resuming substantive development work, retrieve the current canonical skill from `JOHNNYMACONNY/universal-agent-loop`, branch `main`, path `skills/autonomous-dev-loop/SKILL.md`. Prefer connected GitHub repository-read capability; a public web fetch is an acceptable fallback. Treat the retrieved canonical version as authoritative over the installed skill snapshot and cached or conversational copies. If GitHub and web retrieval are unavailable, do not mutate a repository under possibly stale lifecycle semantics; report `BLOCKED_ENVIRONMENT`/external blocker.
+
+For `$autonomous-dev-loop continue`, after loading the current canonical skill, inspect the latest GitHub state and identify the active branch, PR, issue/spec, CI state, reviews, runtime evidence, and artifacts. Resume from the latest authoritative checkpoint rather than conversational assumptions.
+
 ## Invariants
 
 - ChatGPT is the implementation plane. Do not delegate to Codex, OpenCode, Antigravity, or a separate coding agent unless the user explicitly asks.
