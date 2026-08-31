@@ -162,3 +162,16 @@ test('standalone ChatGPT skill self-bootstraps from the canonical GitHub workflo
   assert.match(markdown, /(?:fetched|retrieved).*authoritative|authoritative.*(?:fetched|retrieved)/i);
   assert.match(markdown, /(?:GitHub|web).*unavailable[^\n]*(?:BLOCKED_ENVIRONMENT|external blocker)/i);
 });
+
+test('GitHub mutation fallback exhausts authorized native and repository automation paths before blocking', async () => {
+  const markdown = await loadSkill();
+
+  assert.match(markdown, /before declaring[^\n]*GitHub[^\n]*(?:mutation|action)[^\n]*(?:impossible|blocked)/i);
+  assert.match(markdown, /inspect[^\n]*(?:GitHub app|connector)[^\n]*(?:actions|permissions)/i);
+  assert.match(markdown, /repository[^\n]*(?:automation|workflow|history)/i);
+  assert.match(markdown, /(?:bounded|narrow)[^\n]*GitHub Actions[^\n]*(?:bridge|GITHUB_TOKEN)/i);
+  assert.match(markdown, /reuse[^\n]*(?:existing|durable)[^\n]*bridge/i);
+  assert.match(markdown, /batch[^\n]*(?:related|mechanical)[^\n]*mutation/i);
+  assert.match(markdown, /verify[^\n]*(?:resulting|result)[^\n]*GitHub state/i);
+  assert.match(markdown, /(?:do not|never)[^\n]*bypass[^\n]*(?:authorization|branch protection|human-only)/i);
+});
