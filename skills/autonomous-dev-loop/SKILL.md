@@ -22,6 +22,7 @@ For `$autonomous-dev-loop continue`, after loading the current canonical skill, 
 - Do not stop because a skill, commit, test, review, repair, PR, or merge finished. Continue until PASS, external blocker, lost authority outside the autonomous PR lifecycle, or ROLLOVER_REQUIRED.
 - Before editing, inspect instructions, branch/PR/issue, code/tests/workflows, artifacts, requirements. Reuse existing artifacts; resolve conflicts.
 - Discover repo read/write, PR, merge, CI visibility, browser/runtime URL, browser-control capability, skills, shell, filesystem, git. With no local shell, do not pretend commands ran or fabricate results. Missing capability => BLOCKED_ENVIRONMENT/external blocker.
+- **GitHub capability fallback:** Before declaring a GitHub mutation impossible or blocked, inspect the connected GitHub app/connector actions and permissions plus repository automation/workflow history. If the direct connector lacks the required mutation but repository/workflow writes are authorized, prefer a bounded GitHub Actions bridge using `GITHUB_TOKEN`; reuse an existing durable bridge when available, otherwise create the smallest safe mechanism. Batch related mechanical mutations, verify the resulting GitHub state, and remove temporary infrastructure. Never use this to bypass authorization, branch protection, or human-only gates.
 
 ## Route automatically
 
